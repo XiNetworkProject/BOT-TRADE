@@ -44,6 +44,17 @@ class ArbitrageBot {
         this.provider = new ethers.providers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
         this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
         
+        // Vérification des adresses
+        if (!ethers.utils.isAddress(process.env.POL_TOKEN_ADDRESS)) {
+            throw new Error(`Adresse POL invalide: ${process.env.POL_TOKEN_ADDRESS}`);
+        }
+        if (!ethers.utils.isAddress(process.env.WETH_TOKEN_ADDRESS)) {
+            throw new Error(`Adresse WETH invalide: ${process.env.WETH_TOKEN_ADDRESS}`);
+        }
+        if (!ethers.utils.isAddress(process.env.USDC_TOKEN_ADDRESS)) {
+            throw new Error(`Adresse USDC invalide: ${process.env.USDC_TOKEN_ADDRESS}`);
+        }
+        
         // Initialisation des tokens
         this.POL = new Token(137, process.env.POL_TOKEN_ADDRESS, 18, 'POL', 'Polymath');
         this.WETH = new Token(137, process.env.WETH_TOKEN_ADDRESS, 18, 'WETH', 'Wrapped Ether');
