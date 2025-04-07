@@ -1,0 +1,40 @@
+{
+  "name": "quickswap-arbitrage-bot",
+  "version": "1.0.0",
+  "description": "Bot d'arbitrage intra-DEX pour QuickSwap",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node scripts/start.js",
+    "test": "jest",
+    "lint": "eslint src/",
+    "format": "prettier --write src/"
+  },
+  "dependencies": {
+    "@uniswap/v3-sdk": "^3.9.0",
+    "@uniswap/sdk-core": "^3.0.0",
+    "ethers": "^5.7.2",
+    "dotenv": "^16.0.3",
+    "web3": "^1.8.2",
+    "node-fetch": "^2.6.7",
+    "node-telegram-bot-api": "^0.61.0",
+    "winston": "^3.8.2",
+    "pino": "^8.11.0",
+    "pino-pretty": "^10.0.0",
+    "prom-client": "^14.1.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "helmet": "^6.0.1",
+    "compression": "^1.7.4",
+    "rate-limiter-flexible": "^2.4.1",
+    "node-cache": "^5.1.2"
+  },
+  "devDependencies": {
+    "jest": "^29.3.1",
+    "eslint": "^8.33.0",
+    "prettier": "^2.8.3",
+    "nodemon": "^2.0.20"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+} 

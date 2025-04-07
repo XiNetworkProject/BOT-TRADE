@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: quickswap-arbitrage-bot
+    runtime: node
+    region: frankfurt  # Europe pour une meilleure latence avec Polygon
+    plan: starter      # Plan de démarrage, à ajuster selon les besoins
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # Variables d'environnement sécurisées à configurer dans l'interface Render
+      - key: POLYGON_RPC_URL
+        sync: false
+      - key: PRIVATE_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+    autoDeploy: true
+    disk:
+      name: bot-data
+      mountPath: /data
+      sizeGB: 1
+    scaling:
+      minInstances: 1
+      maxInstances: 1
+      targetMemoryPercent: 80
+      targetCPUPercent: 80
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+    metrics:
+      - port: 3000
+        path: /metrics 
