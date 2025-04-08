@@ -422,61 +422,39 @@ class ArbitrageBot {
 
     async start() {
         try {
-            logger.info('🚀 Démarrage du bot d\'arbitrage...');
+            console.log('🚀 Démarrage du bot d\'arbitrage...');
             
             // Vérification de la connexion au réseau
-            try {
-                const network = await this.provider.getNetwork();
-                logger.info(`🌐 Connecté au réseau: ${network.name} (${network.chainId})`);
-            } catch (error) {
-                logger.error('❌ Erreur de connexion au réseau:', error);
-                throw error;
+            const network = await this.provider.getNetwork();
+            console.log(`🌐 Connecté au réseau: ${network.name} (Chain ID: ${network.chainId})`);
+            
+            // Vérification du solde du portefeuille
+            const balance = await this.wallet.getBalance();
+            const balanceInEth = ethers.utils.formatEther(balance);
+            console.log(`💰 Solde du portefeuille: ${balanceInEth} ETH`);
+            
+            if (parseFloat(balanceInEth) < 0.00001) {
+                console.warn('⚠️ Attention: Solde insuffisant pour effectuer des transactions');
             }
-
-            // Vérification du solde
-            try {
-                const balance = await this.wallet.getBalance();
-                const balanceEth = ethers.utils.formatEther(balance);
-                logger.info(`💰 Solde du wallet: ${balanceEth} ETH`);
-                
-                if (parseFloat(balanceEth) < 0.00001) {
-                    logger.warn('⚠️ Solde insuffisant pour effectuer des trades');
-                    this.sendAlert('⚠️ Attention: Solde insuffisant pour effectuer des trades');
-                }
-            } catch (error) {
-                logger.error('❌ Erreur lors de la vérification du solde:', error);
-                throw error;
+            
+            // Vérification des pools
+            console.log('🔍 Vérification des pools...');
+            const polWethPool = await this.getPoolWithCache(this.POL, this.WETH);
+            const polUsdcPool = await this.getPoolWithCache(this.POL, this.USDC);
+            
+            if (!polWethPool || !polUsdcPool) {
+                throw new Error('Un ou plusieurs pools non trouvés');
             }
-
-            // Initialisation du bot Telegram
-            if (process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
-                this.initializeTelegramBot();
-            }
-
-            // Initialisation du serveur Express
-            this.initExpressServer();
-
+            
+            console.log('✅ Pools vérifiés avec succès');
+            
             // Démarrage du monitoring
-            logger.info('🔍 Démarrage du monitoring des pools...');
-            const frequency = parseInt(process.env.TRADE_FREQUENCY_MS);
-            logger.info(`⏱️ Fréquence de monitoring: ${frequency}ms`);
+            this.startMonitoring();
+            console.log(`⏱️ Monitoring démarré (fréquence: ${process.env.TRADE_FREQUENCY_MS}ms)`);
             
-            // Premier monitoring immédiat
-            await this.monitorPools();
-            
-            // Puis monitoring périodique
-            setInterval(() => {
-                this.monitorPools().catch(error => {
-                    logger.error('❌ Erreur dans le monitoring des pools:', error);
-                });
-            }, frequency);
-
-            logger.info('✅ Bot d\'arbitrage démarré avec succès');
-            this.sendAlert('🤖 Bot d\'arbitrage démarré avec succès!');
         } catch (error) {
-            logger.error('❌ Erreur lors du démarrage du bot:', error);
-            this.sendAlert(`❌ Erreur au démarrage: ${error.message}`);
-            process.exit(1); // Arrêt du processus en cas d'erreur critique
+            console.error('❌ Erreur critique lors du démarrage:', error);
+            process.exit(1);
         }
     }
 }
