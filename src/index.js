@@ -177,20 +177,24 @@ class ArbitrageBot {
             return;
         }
 
+        logger.info('🚀 Démarrage du monitoring...');
+        
         // Exécution immédiate du premier monitoring
-        this.monitorPools();
+        this.monitorPools().catch(error => {
+            logger.error('Erreur lors du premier monitoring:', error);
+        });
 
         // Configuration de l'intervalle à 30 secondes
         this.monitoringInterval = setInterval(async () => {
             try {
                 await this.monitorPools();
             } catch (error) {
-                logger.error('Erreur critique:', error);
-                this.sendAlert(`🚨 Erreur critique: ${error.message}`);
+                logger.error('Erreur lors du monitoring:', error);
             }
         }, 30000); // 30 secondes
 
-        logger.info('🔄 Monitoring démarré (intervalle: 30 secondes)');
+        logger.info('⏱️ Monitoring configuré (intervalle: 30 secondes)');
+        this.sendAlert('🔄 Monitoring démarré - Vérification toutes les 30 secondes');
     }
 
     stopMonitoring() {
@@ -203,11 +207,31 @@ class ArbitrageBot {
 
     async monitorPools() {
         try {
-            logger.info('🔍 Début du monitoring des pools...');
-            logger.info(`⏱️ Timestamp: ${new Date().toISOString()}`);
-            
+            logger.info('🔍 Début du cycle de monitoring...');
+
+            // Vérification de la connexion au réseau
+            const network = await this.provider.getNetwork();
+            logger.info('🌐 Réseau connecté:', {
+                name: network.name,
+                chainId: network.chainId
+            });
+
+            // Vérification du solde du wallet
+            const balance = await this.provider.getBalance(this.wallet.address);
+            const balanceEth = ethers.utils.formatEther(balance);
+            logger.info('💰 Balance du wallet:', {
+                address: this.wallet.address,
+                balance: `${balanceEth} ETH`
+            });
+
+            if (parseFloat(balanceEth) < 0.00001) {
+                logger.warn('⚠️ Balance trop faible pour trader');
+                await this.sendAlert(`⚠️ Balance insuffisante: ${balanceEth} ETH`);
+                return;
+            }
+
             // Récupération des pools
-            logger.info('📊 Tentative de récupération des pools...');
+            logger.info('🏊 Tentative de récupération des pools...');
             const polWethPool = await this.getPool(this.POL, this.WETH);
             const polUsdcPool = await this.getPool(this.POL, this.USDC);
             
@@ -218,64 +242,45 @@ class ArbitrageBot {
                 });
                 return;
             }
-            logger.info('✅ Pools récupérés avec succès');
+            logger.info('✅ Pools trouvés');
 
-            // Récupération des prix en WETH et USDC
-            logger.info('💹 Récupération des prix...');
+            // Récupération des prix
             const polWethPrice = await this.getPrice(polWethPool);
             const polUsdcPrice = await this.getPrice(polUsdcPool);
-            
-            // Conversion du prix USDC en équivalent WETH pour comparaison
-            const wethPriceInUsdc = 4.47; // Prix actuel de WETH en USDC
+            const wethPriceInUsdc = 4.47;
             const polUsdcPriceInWeth = polUsdcPrice / wethPriceInUsdc;
 
-            // Calcul de la différence de prix
-            const priceDifference = Math.abs(polWethPrice - polUsdcPriceInWeth);
-            const priceDifferencePercent = (priceDifference / Math.min(polWethPrice, polUsdcPriceInWeth)) * 100;
-            
-            // Calcul de la taille du trade
-            const tradeSize = Math.min(
-                parseFloat(await this.getTokenBalance(this.WETH)),
-                parseFloat(process.env.MAX_TRADE_SIZE_ETH || '0.05')
-            );
+            logger.info('💹 Prix actuels:', {
+                POL_WETH: `${polWethPrice} WETH`,
+                POL_USDC: `${polUsdcPrice} USDC`,
+                POL_USDC_IN_WETH: `${polUsdcPriceInWeth} WETH`,
+                différence: `${((Math.abs(polWethPrice - polUsdcPriceInWeth) / Math.min(polWethPrice, polUsdcPriceInWeth)) * 100).toFixed(4)}%`
+            });
 
             // Vérification du prix du gas
             const gasPrice = await this.provider.getGasPrice();
             const gasPriceGwei = ethers.utils.formatUnits(gasPrice, 'gwei');
-            const maxGasPrice = parseFloat(process.env.MAX_GAS_PRICE_GWEI || '50');
-
-            logger.info('⛽ Analyse du gas:', {
-                currentGasPrice: `${gasPriceGwei} Gwei`,
-                maxGasPrice: `${maxGasPrice} Gwei`,
-                estimatedGasCost: `${(parseFloat(gasPriceGwei) * 250000 / 1e9).toFixed(6)} ETH`
+            logger.info('⛽ Prix du gas:', {
+                price: `${gasPriceGwei} Gwei`,
+                maxAcceptable: `${process.env.MAX_GAS_PRICE_GWEI || '50'} Gwei`
             });
 
-            // Exécution du trade si le prix du gas est acceptable
-            if (parseFloat(gasPriceGwei) <= maxGasPrice) {
-                logger.info('🚀 Tentative de trade...');
-                
-                try {
-                    await this.executeArbitrage(polWethPool, polUsdcPool, polWethPrice, polUsdcPriceInWeth);
-                    logger.info('✅ Trade exécuté avec succès');
-                } catch (error) {
-                    logger.error('❌ Erreur lors du trade:', {
-                        message: error.message,
-                        stack: error.stack,
-                        timestamp: new Date().toISOString()
-                    });
-                    await this.sendAlert(`❌ Erreur lors du trade: ${error.message}`);
-                }
+            // Tentative de trade si le gas est acceptable
+            if (parseFloat(gasPriceGwei) <= parseFloat(process.env.MAX_GAS_PRICE_GWEI || '50')) {
+                logger.info('🎯 Conditions favorables, tentative de trade...');
+                await this.executeArbitrage(polWethPool, polUsdcPool, polWethPrice, polUsdcPriceInWeth);
             } else {
                 logger.warn('⚠️ Prix du gas trop élevé pour trader');
             }
 
+            logger.info('✅ Cycle de monitoring terminé');
+
         } catch (error) {
             logger.error('❌ Erreur lors du monitoring:', {
                 message: error.message,
-                stack: error.stack,
-                timestamp: new Date().toISOString()
+                stack: error.stack
             });
-            await this.sendAlert(`❌ Erreur lors du monitoring: ${error.message}`);
+            await this.sendAlert(`❌ Erreur de monitoring: ${error.message}`);
         }
     }
 
@@ -700,46 +705,32 @@ class ArbitrageBot {
 
     async start() {
         try {
-            console.log('🚀 Démarrage du bot d\'arbitrage...');
+            logger.info('🚀 Démarrage du bot d\'arbitrage...');
             
-            // Vérification de la connexion au réseau
-            const network = await this.provider.getNetwork();
-            console.log(`🌐 Connecté au réseau: ${network.name} (Chain ID: ${network.chainId})`);
-            
-            // Vérification du solde du portefeuille
-            const balance = await this.wallet.getBalance();
-            const balanceInEth = ethers.utils.formatEther(balance);
-            console.log(`💰 Solde du portefeuille: ${balanceInEth} ETH`);
-            
-            if (parseFloat(balanceInEth) < 0.00001) {
-                console.warn('⚠️ Attention: Solde insuffisant pour effectuer des transactions');
-                this.sendAlert('⚠️ Attention: Solde insuffisant pour effectuer des transactions');
+            // Vérification des adresses
+            logger.info('📝 Vérification des adresses...');
+            logger.info(`POL: ${this.POL}`);
+            logger.info(`WETH: ${this.WETH}`);
+            logger.info(`USDC: ${this.USDC}`);
+
+            // Initialisation du bot Telegram
+            const telegramInitialized = await this.initializeTelegramBot();
+            if (!telegramInitialized) {
+                logger.error('❌ Échec de l\'initialisation du bot Telegram');
+                return;
             }
-            
-            // Vérification des pools
-            console.log('🔍 Vérification des pools...');
-            const polWethPool = await this.getPoolWithCache(this.POL, this.WETH);
-            const polUsdcPool = await this.getPoolWithCache(this.POL, this.USDC);
-            
-            if (!polWethPool || !polUsdcPool) {
-                throw new Error('Un ou plusieurs pools non trouvés');
-            }
-            
-            console.log('✅ Pools vérifiés avec succès');
-            
-            // Initialisation du bot Telegram si activé
-            if (process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
-                console.log('🤖 Initialisation du bot Telegram...');
-                this.initializeTelegramBot();
-            }
-            
+
+            // Démarrage du serveur Express
+            this.initExpressServer();
+
             // Démarrage du monitoring
             this.startMonitoring();
-            console.log(`⏱️ Monitoring démarré (fréquence: ${process.env.TRADE_FREQUENCY_MS}ms)`);
+
+            // Envoi d'un message de confirmation
+            await this.sendAlert('🤖 Bot démarré et prêt à trader!');
             
         } catch (error) {
-            console.error('❌ Erreur critique lors du démarrage:', error);
-            this.sendAlert(`❌ Erreur au démarrage: ${error.message}`);
+            logger.error('❌ Erreur lors du démarrage:', error);
             process.exit(1);
         }
     }
@@ -777,6 +768,102 @@ class ArbitrageBot {
 
         await this.sendAlert(recap);
         logger.info('📊 Récapitulatif des trades envoyé');
+    }
+
+    async getPool(tokenA, tokenB) {
+        try {
+            const factoryContract = new ethers.Contract(
+                process.env.QUICKSWAP_FACTORY_ADDRESS,
+                ['function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)'],
+                this.provider
+            );
+
+            // Essai avec différents frais (0.3%, 0.05%, 1%)
+            const fees = [3000, 500, 10000];
+            let poolAddress = null;
+
+            for (const fee of fees) {
+                poolAddress = await factoryContract.getPool(tokenA.address, tokenB.address, fee);
+                if (poolAddress && poolAddress !== ethers.constants.AddressZero) {
+                    logger.info(`Pool trouvé pour ${tokenA.symbol}/${tokenB.symbol} avec frais ${fee/10000}%`);
+                    break;
+                }
+            }
+
+            if (!poolAddress || poolAddress === ethers.constants.AddressZero) {
+                logger.error(`Aucun pool trouvé pour ${tokenA.symbol}/${tokenB.symbol}`);
+                return null;
+            }
+
+            const poolContract = new ethers.Contract(
+                poolAddress,
+                [
+                    'function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)',
+                    'function liquidity() external view returns (uint128)'
+                ],
+                this.provider
+            );
+
+            const [slot0, liquidity] = await Promise.all([
+                poolContract.slot0(),
+                poolContract.liquidity()
+            ]);
+
+            // Vérification de la liquidité minimale
+            const liquidityETH = ethers.utils.formatEther(liquidity);
+            if (parseFloat(liquidityETH) < parseFloat(process.env.MIN_POOL_LIQUIDITY_ETH)) {
+                logger.warn(`Liquidité insuffisante dans le pool ${tokenA.symbol}/${tokenB.symbol}: ${liquidityETH} ETH`);
+                return null;
+            }
+
+            logger.info(`Pool ${tokenA.symbol}/${tokenB.symbol} validé avec ${liquidityETH} ETH de liquidité`);
+            return { address: poolAddress, slot0, liquidity };
+
+        } catch (error) {
+            logger.error(`Erreur lors de la récupération du pool ${tokenA.symbol}/${tokenB.symbol}:`, error);
+            return null;
+        }
+    }
+
+    async getPrice(pool) {
+        try {
+            if (!pool) {
+                throw new Error('Pool non défini');
+            }
+
+            const poolContract = new ethers.Contract(
+                pool.address,
+                [
+                    'function token0() external view returns (address)',
+                    'function token1() external view returns (address)',
+                    'function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)'
+                ],
+                this.provider
+            );
+
+            const [token0Address, token1Address, slot0] = await Promise.all([
+                poolContract.token0(),
+                poolContract.token1(),
+                poolContract.slot0()
+            ]);
+
+            const sqrtPriceX96 = slot0.sqrtPriceX96;
+            const Q96 = ethers.BigNumber.from('2').pow(96);
+            
+            // Calcul du prix en fonction de l'ordre des tokens
+            let price;
+            if (token0Address.toLowerCase() === this.POL.address.toLowerCase()) {
+                price = sqrtPriceX96.mul(sqrtPriceX96).div(Q96).div(Q96);
+            } else {
+                price = Q96.mul(Q96).div(sqrtPriceX96).div(sqrtPriceX96);
+            }
+
+            return ethers.utils.formatUnits(price, 18);
+
+        } catch (error) {
+            logger.error('Erreur lors de la récupération du prix:', error);
+            return null;
+        }
     }
 }
 
