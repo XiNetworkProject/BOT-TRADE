@@ -76,7 +76,19 @@ class ArbitrageBot {
 
         // Initialisation du bot Telegram
         if (process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
-            this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {polling: true});
+            try {
+                this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+                    polling: {
+                        interval: 300,
+                        autoStart: false
+                    }
+                });
+                this.telegramBot.startPolling();
+                logger.info('Bot Telegram initialisé avec succès');
+            } catch (error) {
+                logger.error('Erreur lors de l\'initialisation du bot Telegram:', error);
+                this.telegramBot = null;
+            }
         }
 
         // Initialisation du serveur Express
