@@ -74,6 +74,32 @@ class ArbitrageBot {
             failedTrades: new promClient.Counter({ name: 'failed_trades', help: 'Nombre de trades échoués' })
         };
 
+        // Statistiques de trading
+        this.tradingStats = {
+            startTime: new Date(),
+            trades: {
+                total: 0,
+                successful: 0,
+                failed: 0
+            },
+            profits: {
+                totalWETH: 0,
+                totalUSD: 0,
+                bestTradeWETH: 0,
+                bestTradeUSD: 0,
+                worstTradeWETH: 0,
+                worstTradeUSD: 0
+            },
+            volume: {
+                totalWETH: 0,
+                totalUSD: 0
+            },
+            gas: {
+                totalGasUsed: 0,
+                totalGasCostUSD: 0
+            }
+        };
+
         // Initialisation du bot Telegram
         if (process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
             this.initializeTelegramBot();
@@ -81,6 +107,9 @@ class ArbitrageBot {
 
         // Initialisation du serveur Express
         this.initExpressServer();
+
+        // Initialisation du récapitulatif périodique
+        this.initializeRecap();
     }
 
     initExpressServer() {
@@ -148,6 +177,10 @@ class ArbitrageBot {
             return;
         }
 
+        // Exécution immédiate du premier monitoring
+        this.monitorPools();
+
+        // Configuration de l'intervalle à 30 secondes
         this.monitoringInterval = setInterval(async () => {
             try {
                 await this.monitorPools();
@@ -155,9 +188,9 @@ class ArbitrageBot {
                 logger.error('Erreur critique:', error);
                 this.sendAlert(`🚨 Erreur critique: ${error.message}`);
             }
-        }, parseInt(process.env.TRADE_FREQUENCY_MS));
+        }, 30000); // 30 secondes
 
-        logger.info('Monitoring démarré');
+        logger.info('🔄 Monitoring démarré (intervalle: 30 secondes)');
     }
 
     stopMonitoring() {
@@ -171,17 +204,24 @@ class ArbitrageBot {
     async monitorPools() {
         try {
             logger.info('🔍 Début du monitoring des pools...');
+            logger.info(`⏱️ Timestamp: ${new Date().toISOString()}`);
             
             // Récupération des pools
+            logger.info('📊 Tentative de récupération des pools...');
             const polWethPool = await this.getPool(this.POL, this.WETH);
             const polUsdcPool = await this.getPool(this.POL, this.USDC);
             
             if (!polWethPool || !polUsdcPool) {
-                logger.error('❌ Pools non trouvés');
+                logger.error('❌ Pools non trouvés', {
+                    polWethPool: !!polWethPool,
+                    polUsdcPool: !!polUsdcPool
+                });
                 return;
             }
+            logger.info('✅ Pools récupérés avec succès');
 
             // Récupération des prix en WETH et USDC
+            logger.info('💹 Récupération des prix...');
             const polWethPrice = await this.getPrice(polWethPool);
             const polUsdcPrice = await this.getPrice(polUsdcPool);
             
@@ -189,91 +229,53 @@ class ArbitrageBot {
             const wethPriceInUsdc = 4.47; // Prix actuel de WETH en USDC
             const polUsdcPriceInWeth = polUsdcPrice / wethPriceInUsdc;
 
-            // Récupération des soldes pour les alertes
-            const [polBalance, wethBalance, usdcBalance] = await Promise.all([
-                this.getTokenBalance(this.POL),
-                this.getTokenBalance(this.WETH),
-                this.getTokenBalance(this.USDC)
-            ]);
-
-            // Calcul des valeurs en USD pour le suivi
-            const totalValueUsd = (
-                parseFloat(polBalance) * (polUsdcPrice) +
-                parseFloat(wethBalance) * wethPriceInUsdc +
-                parseFloat(usdcBalance)
-            ).toFixed(2);
-
-            logger.info('💰 État du portefeuille:');
-            logger.info(`- POL: ${polBalance} (${(parseFloat(polBalance) * polUsdcPrice).toFixed(2)} USD)`);
-            logger.info(`- WETH: ${wethBalance} (${(parseFloat(wethBalance) * wethPriceInUsdc).toFixed(2)} USD)`);
-            logger.info(`- USDC: ${usdcBalance} USD`);
-            logger.info(`- Valeur totale: ${totalValueUsd} USD`);
-
-            // Seuils de profit dynamiques basés sur la valeur du portefeuille
-            const minProfitUsd = 0.05; // 5 cents minimum
-            const minProfitPercent = 0.1; // 0.1% minimum
-
             // Calcul de la différence de prix
             const priceDifference = Math.abs(polWethPrice - polUsdcPriceInWeth);
             const priceDifferencePercent = (priceDifference / Math.min(polWethPrice, polUsdcPriceInWeth)) * 100;
             
-            // Calcul du profit potentiel en USD
-            const potentialProfitUsd = (priceDifference * parseFloat(wethBalance) * wethPriceInUsdc).toFixed(2);
-            
-            logger.info('📊 Analyse des prix:');
-            logger.info(`- POL/WETH: ${polWethPrice} WETH (${(polWethPrice * wethPriceInUsdc).toFixed(2)} USD)`);
-            logger.info(`- POL/USDC: ${polUsdcPrice} USDC`);
-            logger.info(`- Différence: ${priceDifferencePercent.toFixed(2)}%`);
-            logger.info(`- Profit potentiel: ${potentialProfitUsd} USD`);
+            // Calcul de la taille du trade
+            const tradeSize = Math.min(
+                parseFloat(await this.getTokenBalance(this.WETH)),
+                parseFloat(process.env.MAX_TRADE_SIZE_ETH || '0.05')
+            );
 
-            // Vérification des opportunités d'arbitrage
-            if (priceDifferencePercent >= minProfitPercent && parseFloat(potentialProfitUsd) >= minProfitUsd) {
-                const message = `🚨 Opportunité d'arbitrage détectée!\n` +
-                               `Différence: ${priceDifferencePercent.toFixed(2)}%\n` +
-                               `Profit potentiel: ${potentialProfitUsd} USD\n` +
-                               `Direction: ${polWethPrice > polUsdcPriceInWeth ? 'USDC→WETH→POL' : 'POL→WETH→USDC'}\n` +
-                               `Prix POL/WETH: ${polWethPrice} (${(polWethPrice * wethPriceInUsdc).toFixed(2)} USD)\n` +
-                               `Prix POL/USDC: ${polUsdcPrice} USD`;
+            // Vérification du prix du gas
+            const gasPrice = await this.provider.getGasPrice();
+            const gasPriceGwei = ethers.utils.formatUnits(gasPrice, 'gwei');
+            const maxGasPrice = parseFloat(process.env.MAX_GAS_PRICE_GWEI || '50');
+
+            logger.info('⛽ Analyse du gas:', {
+                currentGasPrice: `${gasPriceGwei} Gwei`,
+                maxGasPrice: `${maxGasPrice} Gwei`,
+                estimatedGasCost: `${(parseFloat(gasPriceGwei) * 250000 / 1e9).toFixed(6)} ETH`
+            });
+
+            // Exécution du trade si le prix du gas est acceptable
+            if (parseFloat(gasPriceGwei) <= maxGasPrice) {
+                logger.info('🚀 Tentative de trade...');
                 
-                logger.info(message);
-                await this.sendAlert(message);
-                
-                // Tentative d'exécution de l'arbitrage
                 try {
                     await this.executeArbitrage(polWethPool, polUsdcPool, polWethPrice, polUsdcPriceInWeth);
+                    logger.info('✅ Trade exécuté avec succès');
                 } catch (error) {
-                    logger.error('❌ Erreur lors de l\'exécution de l\'arbitrage:', error);
-                    await this.sendAlert(`❌ Erreur lors de l\'arbitrage: ${error.message}`);
+                    logger.error('❌ Erreur lors du trade:', {
+                        message: error.message,
+                        stack: error.stack,
+                        timestamp: new Date().toISOString()
+                    });
+                    await this.sendAlert(`❌ Erreur lors du trade: ${error.message}`);
                 }
             } else {
-                const reason = parseFloat(potentialProfitUsd) < minProfitUsd 
-                    ? `Profit insuffisant (${potentialProfitUsd} < ${minProfitUsd} USD)`
-                    : `Différence insuffisante (${priceDifferencePercent.toFixed(2)}% < ${minProfitPercent}%)`;
-                logger.info(`⏳ Pas d'opportunité: ${reason}`);
-            }
-
-            // Alertes de variation de prix importante
-            const PRICE_ALERT_THRESHOLD = 5; // 5% de variation
-            if (priceDifferencePercent > PRICE_ALERT_THRESHOLD) {
-                const alertMessage = `⚠️ Variation importante des prix!\n` +
-                                   `Différence: ${priceDifferencePercent.toFixed(2)}%\n` +
-                                   `POL/WETH: ${polWethPrice} (${(polWethPrice * wethPriceInUsdc).toFixed(2)} USD)\n` +
-                                   `POL/USDC: ${polUsdcPrice} USD`;
-                await this.sendAlert(alertMessage);
-            }
-
-            // Alerte de solde faible
-            const MIN_BALANCE_USD = 1; // 1 USD minimum
-            if (parseFloat(totalValueUsd) < MIN_BALANCE_USD) {
-                const alertMessage = `⚠️ Solde faible!\n` +
-                                   `Valeur totale: ${totalValueUsd} USD\n` +
-                                   `Minimum recommandé: ${MIN_BALANCE_USD} USD`;
-                await this.sendAlert(alertMessage);
+                logger.warn('⚠️ Prix du gas trop élevé pour trader');
             }
 
         } catch (error) {
-            logger.error('❌ Erreur lors du monitoring des pools:', error);
-            await this.sendAlert(`❌ Erreur lors du monitoring des pools: ${error.message}`);
+            logger.error('❌ Erreur lors du monitoring:', {
+                message: error.message,
+                stack: error.stack,
+                timestamp: new Date().toISOString()
+            });
+            await this.sendAlert(`❌ Erreur lors du monitoring: ${error.message}`);
         }
     }
 
@@ -297,106 +299,202 @@ class ArbitrageBot {
 
     async executeArbitrage(polWethPool, polUsdcPool, polWethPrice, polUsdcPriceInWeth) {
         try {
-            logger.info('🔄 Début de l\'exécution de l\'arbitrage...');
+            // Détermination de la direction de l'arbitrage
+            const isWethToUsdc = polWethPrice > polUsdcPriceInWeth;
             
-            // Vérification des soldes de tous les tokens
-            const polContract = new ethers.Contract(
-                this.POL.address,
-                ['function balanceOf(address) view returns (uint256)'],
-                this.wallet
-            );
-            const wethContract = new ethers.Contract(
-                this.WETH.address,
-                ['function balanceOf(address) view returns (uint256)'],
-                this.wallet
-            );
-            const usdcContract = new ethers.Contract(
-                this.USDC.address,
-                ['function balanceOf(address) view returns (uint256)'],
-                this.wallet
-            );
+            // Log des balances initiales
+            const initialBalances = {
+                POL: await this.getTokenBalance(this.POL),
+                WETH: await this.getTokenBalance(this.WETH),
+                USDC: await this.getTokenBalance(this.USDC)
+            };
 
-            const [polBalance, wethBalance, usdcBalance] = await Promise.all([
-                polContract.balanceOf(this.wallet.address),
-                wethContract.balanceOf(this.wallet.address),
-                usdcContract.balanceOf(this.wallet.address)
-            ]);
-
-            logger.info('💰 Soldes actuels:');
-            logger.info(`- POL: ${ethers.utils.formatUnits(polBalance, 18)} POL`);
-            logger.info(`- WETH: ${ethers.utils.formatUnits(wethBalance, 18)} WETH`);
-            logger.info(`- USDC: ${ethers.utils.formatUnits(usdcBalance, 6)} USDC`);
-
-            // Détermination du token source en fonction des prix
-            let sourceToken, sourceBalance, targetToken;
-            if (polWethPrice > polUsdcPriceInWeth) {
-                // Si POL/WETH est plus cher que POL/USDC, on commence par USDC
-                sourceToken = this.USDC;
-                sourceBalance = usdcBalance;
-                targetToken = this.WETH;
-                logger.info('📈 Stratégie: USDC -> WETH -> POL');
-            } else {
-                // Sinon, on commence par POL
-                sourceToken = this.POL;
-                sourceBalance = polBalance;
-                targetToken = this.WETH;
-                logger.info('📈 Stratégie: POL -> WETH -> USDC');
-            }
-
-            // Vérification du solde suffisant
-            if (sourceBalance.eq(0)) {
-                const message = `❌ Solde insuffisant en ${sourceToken.symbol}`;
-                logger.warn(message);
-                await this.sendAlert(message);
-                return;
-            }
-
-            // Calcul du montant du swap (0.5% du solde du token source)
-            const swapAmount = sourceBalance.mul(5).div(1000);
-            logger.info(`💱 Montant du swap: ${ethers.utils.formatUnits(swapAmount, sourceToken.decimals)} ${sourceToken.symbol}`);
-
-            // Vérification de l'approbation
-            const sourceTokenContract = new ethers.Contract(
-                sourceToken.address,
-                ['function approve(address spender, uint256 amount) returns (bool)'],
-                this.wallet
-            );
-
-            logger.info(`🔓 Approbation du contrat router pour ${sourceToken.symbol}...`);
-            const approveTx = await sourceTokenContract.approve(
-                process.env.QUICKSWAP_ROUTER_ADDRESS,
-                swapAmount
-            );
-            await approveTx.wait();
-            logger.info('✅ Approbation confirmée');
-
-            // Exécution des swaps
-            if (polWethPrice > polUsdcPriceInWeth) {
-                await this.executeSwap(this.USDC, this.WETH, swapAmount);
-                const wethReceived = await wethContract.balanceOf(this.wallet.address);
-                await this.executeSwap(this.WETH, this.POL, wethReceived);
-            } else {
-                await this.executeSwap(this.POL, this.WETH, swapAmount);
-                const wethReceived = await wethContract.balanceOf(this.wallet.address);
-                await this.executeSwap(this.WETH, this.USDC, wethReceived);
-            }
-
-            const profitMessage = `✅ Arbitrage réussi!\n` +
-                                `Direction: ${polWethPrice > polUsdcPriceInWeth ? 'USDC->WETH->POL' : 'POL->WETH->USDC'}\n` +
-                                `Montant: ${ethers.utils.formatUnits(swapAmount, sourceToken.decimals)} ${sourceToken.symbol}`;
+            logger.info('💰 Balances initiales:', {
+                POL: `${initialBalances.POL} POL`,
+                WETH: `${initialBalances.WETH} WETH`,
+                USDC: `${initialBalances.USDC} USDC`,
+                totalValueUSD: `${(
+                    parseFloat(initialBalances.WETH) * 4.47 +
+                    parseFloat(initialBalances.USDC) +
+                    parseFloat(initialBalances.POL) * parseFloat(polUsdcPrice)
+                ).toFixed(2)} USD`
+            });
             
-            logger.info(profitMessage);
-            await this.sendAlert(profitMessage);
+            // Calcul de la taille optimale du trade
+            const tradeSize = Math.min(
+                parseFloat(initialBalances.WETH),
+                parseFloat(process.env.MAX_TRADE_SIZE_ETH || '0.05')
+            );
 
+            if (tradeSize < 0.00001) {
+                throw new Error(`Balance WETH insuffisante: ${tradeSize} WETH`);
+            }
+
+            logger.info('🔄 Préparation du trade:', {
+                direction: isWethToUsdc ? 'WETH → POL → USDC' : 'POL → USDC → WETH',
+                tradeSize: `${tradeSize} WETH`,
+                tradeSizeUSD: `${(tradeSize * 4.47).toFixed(2)} USD`,
+                prixPOLWETH: `${polWethPrice} WETH`,
+                prixPOLUSDC: `${polUsdcPrice} USDC`,
+                difference: `${((Math.abs(polWethPrice - polUsdcPriceInWeth) / Math.min(polWethPrice, polUsdcPriceInWeth)) * 100).toFixed(4)}%`,
+                timestamp: new Date().toISOString()
+            });
+
+            // Premier swap
+            const firstSwapAmount = ethers.utils.parseUnits(tradeSize.toString(), 18);
+            logger.info('🔄 Exécution du premier swap:', {
+                tokenIn: isWethToUsdc ? 'WETH' : 'POL',
+                tokenOut: isWethToUsdc ? 'POL' : 'USDC',
+                montant: ethers.utils.formatUnits(firstSwapAmount, 18),
+                timestamp: new Date().toISOString()
+            });
+
+            const firstSwapResult = await this.executeSwap(
+                isWethToUsdc ? this.WETH : this.POL,
+                isWethToUsdc ? this.POL : this.USDC,
+                firstSwapAmount
+            );
+
+            if (!firstSwapResult.success) {
+                throw new Error(`Premier swap échoué: ${firstSwapResult.error}`);
+            }
+
+            // Log des balances intermédiaires
+            const intermediateBalances = {
+                POL: await this.getTokenBalance(this.POL),
+                WETH: await this.getTokenBalance(this.WETH),
+                USDC: await this.getTokenBalance(this.USDC)
+            };
+
+            logger.info('💰 Balances après premier swap:', {
+                POL: `${intermediateBalances.POL} POL (Δ: ${(parseFloat(intermediateBalances.POL) - parseFloat(initialBalances.POL)).toFixed(6)})`,
+                WETH: `${intermediateBalances.WETH} WETH (Δ: ${(parseFloat(intermediateBalances.WETH) - parseFloat(initialBalances.WETH)).toFixed(6)})`,
+                USDC: `${intermediateBalances.USDC} USDC (Δ: ${(parseFloat(intermediateBalances.USDC) - parseFloat(initialBalances.USDC)).toFixed(6)})`
+            });
+
+            // Deuxième swap
+            const secondSwapAmount = firstSwapResult.amountOut;
+            logger.info('🔄 Exécution du deuxième swap:', {
+                tokenIn: isWethToUsdc ? 'POL' : 'USDC',
+                tokenOut: isWethToUsdc ? 'USDC' : 'WETH',
+                montant: secondSwapAmount,
+                timestamp: new Date().toISOString()
+            });
+
+            const secondSwapResult = await this.executeSwap(
+                isWethToUsdc ? this.POL : this.USDC,
+                isWethToUsdc ? this.USDC : this.WETH,
+                secondSwapAmount
+            );
+
+            if (!secondSwapResult.success) {
+                throw new Error(`Deuxième swap échoué: ${secondSwapResult.error}`);
+            }
+
+            // Log des balances finales
+            const finalBalances = {
+                POL: await this.getTokenBalance(this.POL),
+                WETH: await this.getTokenBalance(this.WETH),
+                USDC: await this.getTokenBalance(this.USDC)
+            };
+
+            logger.info('💰 Balances finales:', {
+                POL: `${finalBalances.POL} POL (Δ: ${(parseFloat(finalBalances.POL) - parseFloat(initialBalances.POL)).toFixed(6)})`,
+                WETH: `${finalBalances.WETH} WETH (Δ: ${(parseFloat(finalBalances.WETH) - parseFloat(initialBalances.WETH)).toFixed(6)})`,
+                USDC: `${finalBalances.USDC} USDC (Δ: ${(parseFloat(finalBalances.USDC) - parseFloat(initialBalances.USDC)).toFixed(6)})`,
+                totalValueUSD: `${(
+                    parseFloat(finalBalances.WETH) * 4.47 +
+                    parseFloat(finalBalances.USDC) +
+                    parseFloat(finalBalances.POL) * parseFloat(polUsdcPrice)
+                ).toFixed(2)} USD`
+            });
+
+            // Calcul du profit/perte
+            const profit = parseFloat(finalBalances.WETH) - parseFloat(initialBalances.WETH);
+            const profitUsd = profit * 4.47;
+
+            logger.info('📊 Résultat du trade:', {
+                profitWETH: `${profit.toFixed(6)} WETH`,
+                profitUSD: `${profitUsd.toFixed(2)} USD`,
+                profitPercent: `${((profit / parseFloat(initialBalances.WETH)) * 100).toFixed(4)}%`,
+                gasUtilisé: `${(
+                    parseFloat(firstSwapResult.gasUsed || 0) +
+                    parseFloat(secondSwapResult.gasUsed || 0)
+                ).toFixed(0)} gas`,
+                coûtGasUSD: `${(
+                    (parseFloat(firstSwapResult.gasUsed || 0) +
+                    parseFloat(secondSwapResult.gasUsed || 0)) *
+                    parseFloat(ethers.utils.formatUnits(await this.provider.getGasPrice(), 'gwei')) *
+                    4.47 / 1e9
+                ).toFixed(4)} USD`
+            });
+
+            // Mise à jour des métriques
+            this.metrics.totalTrades.inc();
+            
+            // Mise à jour des statistiques
+            this.tradingStats.trades.total++;
+            this.tradingStats.volume.totalWETH += tradeSize;
+            this.tradingStats.volume.totalUSD += tradeSize * 4.47;
+            
+            const gasUsed = parseFloat(firstSwapResult.gasUsed || 0) + parseFloat(secondSwapResult.gasUsed || 0);
+            const gasCostUSD = gasUsed * parseFloat(ethers.utils.formatUnits(await this.provider.getGasPrice(), 'gwei')) * 4.47 / 1e9;
+            
+            this.tradingStats.gas.totalGasUsed += gasUsed;
+            this.tradingStats.gas.totalGasCostUSD += gasCostUSD;
+
+            if (profit >= 0) {
+                this.metrics.successfulTrades.inc();
+                this.metrics.dailyProfit.inc(profitUsd);
+                this.tradingStats.trades.successful++;
+                this.tradingStats.profits.totalWETH += profit;
+                this.tradingStats.profits.totalUSD += profitUsd;
+                
+                if (profit > this.tradingStats.profits.bestTradeWETH) {
+                    this.tradingStats.profits.bestTradeWETH = profit;
+                    this.tradingStats.profits.bestTradeUSD = profitUsd;
+                }
+                
+                await this.sendAlert(`🎉 Trade réussi!\nProfit: ${profit.toFixed(6)} WETH (${profitUsd.toFixed(2)} USD)\nGas utilisé: ${(
+                    parseFloat(firstSwapResult.gasUsed || 0) +
+                    parseFloat(secondSwapResult.gasUsed || 0)
+                ).toFixed(0)}`);
+            } else {
+                this.metrics.failedTrades.inc();
+                this.metrics.dailyLoss.inc(Math.abs(profitUsd));
+                this.tradingStats.trades.failed++;
+                this.tradingStats.profits.totalWETH += profit;
+                this.tradingStats.profits.totalUSD += profitUsd;
+                
+                if (profit < this.tradingStats.profits.worstTradeWETH) {
+                    this.tradingStats.profits.worstTradeWETH = profit;
+                    this.tradingStats.profits.worstTradeUSD = profitUsd;
+                }
+                
+                // Arrêt du bot en cas de perte
+                logger.warn('🛑 Arrêt du bot suite à une perte');
+                this.stopMonitoring();
+                await this.sendAlert(`⚠️ Trade terminé avec perte\nPerte: ${Math.abs(profit).toFixed(6)} WETH (${Math.abs(profitUsd).toFixed(2)} USD)`);
+            }
+            
         } catch (error) {
-            logger.error('❌ Erreur lors de l\'exécution de l\'arbitrage:', error);
+            logger.error('❌ Erreur lors du trade:', {
+                message: error.message,
+                stack: error.stack,
+                timestamp: new Date().toISOString()
+            });
             throw error;
         }
     }
 
     async executeSwap(tokenIn, tokenOut, amount) {
         try {
-            logger.info(`🔄 Début du swap ${tokenIn.symbol} -> ${tokenOut.symbol}`);
+            logger.info('🔄 Préparation du swap:', {
+                tokenIn: tokenIn.symbol,
+                tokenOut: tokenOut.symbol,
+                amount: ethers.utils.formatUnits(amount, tokenIn.decimals),
+                timestamp: new Date().toISOString()
+            });
             
             // Préparation de la transaction
             const router = new ethers.Contract(
@@ -407,7 +505,13 @@ class ArbitrageBot {
 
             // Calcul du montant minimum de sortie avec slippage
             const amountOutMin = amount.mul(95).div(100); // 5% de slippage
-            logger.info(`📊 Montant minimum attendu: ${ethers.utils.formatEther(amountOutMin)} ${tokenOut.symbol}`);
+            logger.info('📊 Paramètres du swap:', {
+                amountIn: ethers.utils.formatUnits(amount, tokenIn.decimals),
+                amountOutMin: ethers.utils.formatUnits(amountOutMin, tokenOut.decimals),
+                slippage: '5%',
+                path: [tokenIn.address, tokenOut.address],
+                deadline: new Date(deadline * 1000).toISOString()
+            });
 
             // Préparation du chemin de swap
             const path = [tokenIn.address, tokenOut.address];
@@ -430,11 +534,18 @@ class ArbitrageBot {
             logger.info(`✅ Swap ${tokenIn.symbol} -> ${tokenOut.symbol} confirmé!`);
             logger.info(`📝 Hash de la transaction: ${receipt.transactionHash}`);
             
-            return receipt;
+            return { success: true, tx: receipt, amountOut: ethers.utils.formatUnits(receipt.logs[receipt.logs.length - 1].topics[3], 18) };
 
         } catch (error) {
-            logger.error(`❌ Erreur lors du swap ${tokenIn.symbol} -> ${tokenOut.symbol}:`, error);
-            throw error;
+            logger.error(`❌ Erreur swap ${tokenIn.symbol} -> ${tokenOut.symbol}:`, {
+                message: error.message,
+                stack: error.stack,
+                tokenIn: tokenIn.symbol,
+                tokenOut: tokenOut.symbol,
+                amount: ethers.utils.formatUnits(amount, tokenIn.decimals),
+                timestamp: new Date().toISOString()
+            });
+            return { success: false, error: error.message };
         }
     }
 
@@ -700,6 +811,41 @@ class ArbitrageBot {
             this.sendAlert(`❌ Erreur au démarrage: ${error.message}`);
             process.exit(1);
         }
+    }
+
+    initializeRecap() {
+        // Récapitulatif toutes les 30 minutes
+        setInterval(() => {
+            this.sendTradingRecap();
+        }, 30 * 60 * 1000); // 30 minutes
+    }
+
+    async sendTradingRecap() {
+        const now = new Date();
+        const duration = Math.floor((now - this.tradingStats.startTime) / 1000 / 60); // en minutes
+
+        const recap = `📊 Récapitulatif des trades (${duration} minutes)\n\n` +
+            `🔄 Trades totaux: ${this.tradingStats.trades.total}\n` +
+            `✅ Trades réussis: ${this.tradingStats.trades.successful}\n` +
+            `❌ Trades échoués: ${this.tradingStats.trades.failed}\n\n` +
+            `💰 Profits:\n` +
+            `- Total: ${this.tradingStats.profits.totalWETH.toFixed(6)} WETH (${this.tradingStats.profits.totalUSD.toFixed(2)} USD)\n` +
+            `- Meilleur trade: ${this.tradingStats.profits.bestTradeWETH.toFixed(6)} WETH (${this.tradingStats.profits.bestTradeUSD.toFixed(2)} USD)\n` +
+            `- Pire trade: ${this.tradingStats.profits.worstTradeWETH.toFixed(6)} WETH (${this.tradingStats.profits.worstTradeUSD.toFixed(2)} USD)\n\n` +
+            `📈 Volume:\n` +
+            `- Total: ${this.tradingStats.volume.totalWETH.toFixed(6)} WETH (${this.tradingStats.volume.totalUSD.toFixed(2)} USD)\n` +
+            `- Moyenne par trade: ${(this.tradingStats.volume.totalWETH / (this.tradingStats.trades.total || 1)).toFixed(6)} WETH\n\n` +
+            `⛽ Gas:\n` +
+            `- Total utilisé: ${this.tradingStats.gas.totalGasUsed.toFixed(0)}\n` +
+            `- Coût total: ${this.tradingStats.gas.totalGasCostUSD.toFixed(4)} USD\n` +
+            `- Moyenne par trade: ${(this.tradingStats.gas.totalGasCostUSD / (this.tradingStats.trades.total || 1)).toFixed(4)} USD\n\n` +
+            `📈 Performance:\n` +
+            `- Taux de réussite: ${((this.tradingStats.trades.successful / (this.tradingStats.trades.total || 1)) * 100).toFixed(2)}%\n` +
+            `- Profit moyen par trade: ${(this.tradingStats.profits.totalWETH / (this.tradingStats.trades.total || 1)).toFixed(6)} WETH\n` +
+            `- ROI: ${((this.tradingStats.profits.totalUSD / (this.tradingStats.gas.totalGasCostUSD || 1)) * 100).toFixed(2)}%`;
+
+        await this.sendAlert(recap);
+        logger.info('📊 Récapitulatif des trades envoyé');
     }
 }
 
