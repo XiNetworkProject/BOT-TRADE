@@ -319,18 +319,33 @@ class ArbitrageBot {
             this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
                 polling: {
                     interval: 300,
-                    autoStart: false
+                    autoStart: false,
+                    params: {
+                        timeout: 10
+                    }
                 }
             });
 
             // Gestion des erreurs de polling
             this.telegramBot.on('polling_error', (error) => {
                 if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
-                    logger.warn('Conflit détecté avec une autre instance du bot Telegram. Tentative de réinitialisation...');
+                    logger.warn('Conflit détecté avec une autre instance du bot Telegram. Arrêt du polling actuel...');
+                    this.telegramBot.stopPolling();
+                    
+                    // Attendre plus longtemps avant de réessayer
                     setTimeout(() => {
-                        this.telegramBot.stopPolling();
-                        this.telegramBot.startPolling();
-                    }, 5000); // Attendre 5 secondes avant de réessayer
+                        logger.info('Tentative de redémarrage du bot Telegram...');
+                        try {
+                            this.telegramBot.startPolling();
+                            logger.info('Bot Telegram redémarré avec succès');
+                        } catch (restartError) {
+                            logger.error('Échec du redémarrage du bot Telegram:', restartError);
+                            // Si le redémarrage échoue, on attend encore plus longtemps
+                            setTimeout(() => {
+                                this.initializeTelegramBot();
+                            }, 30000); // 30 secondes
+                        }
+                    }, 10000); // 10 secondes
                 } else {
                     logger.error('Erreur de polling Telegram:', error);
                 }
