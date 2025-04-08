@@ -76,19 +76,7 @@ class ArbitrageBot {
 
         // Initialisation du bot Telegram
         if (process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
-            try {
-                this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
-                    polling: {
-                        interval: 300,
-                        autoStart: false
-                    }
-                });
-                this.telegramBot.startPolling();
-                logger.info('Bot Telegram initialisé avec succès');
-            } catch (error) {
-                logger.error('Erreur lors de l\'initialisation du bot Telegram:', error);
-                this.telegramBot = null;
-            }
+            this.initializeTelegramBot();
         }
 
         // Initialisation du serveur Express
@@ -324,6 +312,36 @@ class ArbitrageBot {
             this.telegramBot.sendMessage(process.env.TELEGRAM_CHAT_ID, message);
         }
         logger.info(message);
+    }
+
+    initializeTelegramBot() {
+        try {
+            this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+                polling: {
+                    interval: 300,
+                    autoStart: false
+                }
+            });
+
+            // Gestion des erreurs de polling
+            this.telegramBot.on('polling_error', (error) => {
+                if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
+                    logger.warn('Conflit détecté avec une autre instance du bot Telegram. Tentative de réinitialisation...');
+                    setTimeout(() => {
+                        this.telegramBot.stopPolling();
+                        this.telegramBot.startPolling();
+                    }, 5000); // Attendre 5 secondes avant de réessayer
+                } else {
+                    logger.error('Erreur de polling Telegram:', error);
+                }
+            });
+
+            this.telegramBot.startPolling();
+            logger.info('Bot Telegram initialisé avec succès');
+        } catch (error) {
+            logger.error('Erreur lors de l\'initialisation du bot Telegram:', error);
+            this.telegramBot = null;
+        }
     }
 }
 
