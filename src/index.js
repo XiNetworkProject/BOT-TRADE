@@ -416,12 +416,23 @@ class ArbitrageBot {
             
             console.log('✅ Pools vérifiés avec succès');
             
+            // Initialisation du bot Telegram si activé
+            if (process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
+                console.log('🤖 Initialisation du bot Telegram...');
+                await new Promise(resolve => setTimeout(resolve, 2000)); // Attente pour éviter les conflits
+                this.initializeTelegramBot();
+            }
+            
             // Démarrage du monitoring
             this.startMonitoring();
             console.log(`⏱️ Monitoring démarré (fréquence: ${process.env.TRADE_FREQUENCY_MS}ms)`);
             
+            // Envoi d'une notification de démarrage
+            this.sendAlert('🤖 Bot d\'arbitrage démarré avec succès!');
+            
         } catch (error) {
             console.error('❌ Erreur critique lors du démarrage:', error);
+            this.sendAlert(`❌ Erreur au démarrage: ${error.message}`);
             process.exit(1);
         }
     }
