@@ -85,11 +85,21 @@ class ArbitrageBot {
 
     initExpressServer() {
         const app = express();
-        const port = process.env.PORT || 3000;
+        const port = process.env.PORT || 10000;
 
-        app.use(helmet());
+        // Middleware
         app.use(cors());
+        app.use(helmet());
         app.use(compression());
+        app.use(express.json());
+
+        // Route pour le webhook Telegram
+        if (this.telegramBot) {
+            app.post('/webhook', (req, res) => {
+                this.telegramBot.handleUpdate(req.body);
+                res.sendStatus(200);
+            });
+        }
 
         // Endpoint de santé
         app.get('/health', (req, res) => {
@@ -322,7 +332,7 @@ class ArbitrageBot {
                 return;
             }
 
-            logger.info('Initialisation du bot Telegram...');
+            logger.info('Initialisation du bot Telegram en mode webhook...');
             
             // Arrêt de toute instance existante
             if (this.telegramBot) {
@@ -331,45 +341,20 @@ class ArbitrageBot {
                 this.telegramBot = null;
             }
 
-            this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
-                polling: {
-                    interval: 300,
-                    autoStart: false,
-                    params: {
-                        timeout: 10,
-                        allowed_updates: ['message', 'callback_query']
-                    }
-                }
-            });
+            this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
 
-            // Gestion des erreurs de polling
-            this.telegramBot.on('polling_error', (error) => {
-                logger.error('Erreur de polling Telegram:', error);
-                
-                if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
-                    logger.warn('Conflit détecté avec une autre instance du bot Telegram');
-                    
-                    // Arrêt complet du bot
-                    this.telegramBot.stopPolling();
-                    this.telegramBot = null;
-                    
-                    // Attente plus longue avant de réessayer
-                    setTimeout(() => {
-                        logger.info('Tentative de réinitialisation du bot Telegram...');
-                        this.initializeTelegramBot();
-                    }, 15000); // 15 secondes
-                }
-            });
-
-            // Vérification de la connexion
-            this.telegramBot.getMe()
+            // Configuration du webhook
+            const webhookUrl = `${process.env.SERVER_URL}/webhook`;
+            this.telegramBot.setWebHook(webhookUrl)
+                .then(() => {
+                    logger.info(`Webhook configuré avec succès: ${webhookUrl}`);
+                    return this.telegramBot.getMe();
+                })
                 .then((botInfo) => {
                     logger.info(`Bot Telegram connecté: ${botInfo.username}`);
-                    this.telegramBot.startPolling();
-                    logger.info('Polling démarré avec succès');
                 })
                 .catch((error) => {
-                    logger.error('Erreur lors de la vérification du bot:', error);
+                    logger.error('Erreur lors de la configuration du webhook:', error);
                     this.telegramBot = null;
                 });
 
