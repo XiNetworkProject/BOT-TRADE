@@ -181,27 +181,103 @@ class ArbitrageBot {
                 return;
             }
 
-            logger.info('Pools trouvés:', {
-                polWethPool: polWethPool ? 'OK' : 'Non trouvé',
-                polUsdcPool: polUsdcPool ? 'OK' : 'Non trouvé'
-            });
-
+            // Récupération des prix
             const [polWethPrice, polUsdcPrice] = await Promise.all([
                 this.getPriceWithCache(polWethPool),
                 this.getPriceWithCache(polUsdcPool)
             ]);
 
+            // Conversion de 5 centimes d'euro en WETH
+            // 1 EUR = 1.08 USD (taux approximatif)
+            // 5 centimes = 0.05 EUR = 0.054 USD
+            const minProfitInUsd = 0.054; // 5 centimes d'euro en USD
+            const minProfitInWeth = minProfitInUsd / polWethPrice; // Conversion en WETH
+
             logger.info('Prix actuels:', {
                 polWethPrice: polWethPrice,
                 polUsdcPrice: polUsdcPrice,
-                difference: Math.abs(polWethPrice - polUsdcPrice),
-                minProfitThreshold: parseFloat(process.env.MIN_PROFIT_THRESHOLD)
+                minProfitInWeth: minProfitInWeth,
+                minProfitInUsd: minProfitInUsd
             });
 
-            await this.checkArbitrageOpportunity(polWethPrice, polUsdcPrice);
+            // Vérification du solde
+            const balance = await this.wallet.getBalance();
+            const balanceInEth = ethers.utils.formatEther(balance);
+            
+            if (parseFloat(balanceInEth) < 0.01) {
+                logger.warn('Solde insuffisant pour effectuer des swaps');
+                this.sendAlert('⚠️ Attention: Solde insuffisant pour effectuer des swaps');
+                return;
+            }
+
+            // Si la différence de prix est suffisante pour un profit
+            if (Math.abs(polWethPrice - polUsdcPrice) >= minProfitInWeth) {
+                // Calcul de la taille du swap (5% du solde disponible)
+                const swapAmount = ethers.utils.parseEther(
+                    (parseFloat(balanceInEth) * 0.05).toString()
+                );
+
+                // Exécution du swap
+                if (polWethPrice > polUsdcPrice) {
+                    // Swap POL -> WETH -> USDC
+                    await this.executeSwap(this.POL, this.WETH, swapAmount);
+                    await this.executeSwap(this.WETH, this.USDC, swapAmount);
+                } else {
+                    // Swap USDC -> WETH -> POL
+                    await this.executeSwap(this.USDC, this.WETH, swapAmount);
+                    await this.executeSwap(this.WETH, this.POL, swapAmount);
+                }
+
+                // Mise à jour des métriques
+                this.metrics.totalTrades.inc();
+                this.metrics.successfulTrades.inc();
+                
+                // Envoi d'une notification
+                this.sendAlert(`✅ Swap effectué avec succès! Profit estimé: ${minProfitInUsd} USD (${minProfitInWeth} WETH)`);
+            } else {
+                logger.info('Pas d\'opportunité de profit suffisante');
+            }
+
         } catch (error) {
-            logger.error('Erreur lors de la surveillance des pools:', error);
-            this.sendAlert(`Erreur: ${error.message}`);
+            logger.error('Erreur lors du monitoring des pools:', error);
+            this.sendAlert(`❌ Erreur: ${error.message}`);
+        }
+    }
+
+    async executeSwap(tokenIn, tokenOut, amount) {
+        try {
+            // Préparation de la transaction
+            const router = new ethers.Contract(
+                process.env.QUICKSWAP_ROUTER_ADDRESS,
+                ['function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)'],
+                this.wallet
+            );
+
+            // Calcul du montant minimum de sortie avec slippage
+            const amountOutMin = amount.mul(95).div(100); // 5% de slippage
+
+            // Préparation du chemin de swap
+            const path = [tokenIn.address, tokenOut.address];
+            const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes
+
+            // Exécution du swap
+            const tx = await router.swapExactTokensForTokens(
+                amount,
+                amountOutMin,
+                path,
+                this.wallet.address,
+                deadline
+            );
+
+            // Attente de la confirmation
+            await tx.wait();
+            
+            logger.info(`Swap ${tokenIn.symbol} -> ${tokenOut.symbol} effectué avec succès`);
+            return tx;
+
+        } catch (error) {
+            logger.error(`Erreur lors du swap ${tokenIn.symbol} -> ${tokenOut.symbol}:`, error);
+            throw error;
         }
     }
 
@@ -341,47 +417,54 @@ class ArbitrageBot {
                 this.telegramBot = null;
             }
 
-            this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
-                polling: {
-                    interval: 300,
-                    autoStart: false,
-                    params: {
-                        timeout: 10,
-                        allowed_updates: ['message', 'callback_query']
+            // Attente de 5 secondes pour s'assurer que l'ancienne instance est bien arrêtée
+            setTimeout(() => {
+                this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+                    polling: {
+                        interval: 300,
+                        autoStart: false,
+                        params: {
+                            timeout: 10,
+                            allowed_updates: ['message', 'callback_query']
+                        }
                     }
-                }
-            });
-
-            // Gestion des erreurs de polling
-            this.telegramBot.on('polling_error', (error) => {
-                logger.error('Erreur de polling Telegram:', error);
-                
-                if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
-                    logger.warn('Conflit détecté avec une autre instance du bot Telegram');
-                    
-                    // Arrêt complet du bot
-                    this.telegramBot.stopPolling();
-                    this.telegramBot = null;
-                    
-                    // Attente plus longue avant de réessayer
-                    setTimeout(() => {
-                        logger.info('Tentative de réinitialisation du bot Telegram...');
-                        this.initializeTelegramBot();
-                    }, 15000); // 15 secondes
-                }
-            });
-
-            // Vérification de la connexion
-            this.telegramBot.getMe()
-                .then((botInfo) => {
-                    logger.info(`Bot Telegram connecté: ${botInfo.username}`);
-                    this.telegramBot.startPolling();
-                    logger.info('Polling démarré avec succès');
-                })
-                .catch((error) => {
-                    logger.error('Erreur lors de la vérification du bot:', error);
-                    this.telegramBot = null;
                 });
+
+                // Gestion des erreurs de polling
+                this.telegramBot.on('polling_error', (error) => {
+                    logger.error('Erreur de polling Telegram:', error);
+                    
+                    if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
+                        logger.warn('Conflit détecté avec une autre instance du bot Telegram');
+                        
+                        // Arrêt complet du bot
+                        this.telegramBot.stopPolling();
+                        this.telegramBot = null;
+                        
+                        // Attente plus longue avant de réessayer
+                        setTimeout(() => {
+                            logger.info('Tentative de réinitialisation du bot Telegram...');
+                            this.initializeTelegramBot();
+                        }, 30000); // 30 secondes
+                    }
+                });
+
+                // Vérification de la connexion
+                this.telegramBot.getMe()
+                    .then((botInfo) => {
+                        logger.info(`Bot Telegram connecté: ${botInfo.username}`);
+                        this.telegramBot.startPolling();
+                        logger.info('Polling démarré avec succès');
+                        
+                        // Envoi d'un message de test
+                        this.sendAlert('🤖 Bot d\'arbitrage connecté et prêt!');
+                    })
+                    .catch((error) => {
+                        logger.error('Erreur lors de la vérification du bot:', error);
+                        this.telegramBot = null;
+                    });
+            }, 5000);
+
         } catch (error) {
             logger.error('Erreur lors de l\'initialisation du bot Telegram:', error);
             this.telegramBot = null;
@@ -420,16 +503,12 @@ class ArbitrageBot {
             // Initialisation du bot Telegram si activé
             if (process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
                 console.log('🤖 Initialisation du bot Telegram...');
-                await new Promise(resolve => setTimeout(resolve, 2000)); // Attente pour éviter les conflits
                 this.initializeTelegramBot();
             }
             
             // Démarrage du monitoring
             this.startMonitoring();
             console.log(`⏱️ Monitoring démarré (fréquence: ${process.env.TRADE_FREQUENCY_MS}ms)`);
-            
-            // Envoi d'une notification de démarrage
-            this.sendAlert('🤖 Bot d\'arbitrage démarré avec succès!');
             
         } catch (error) {
             console.error('❌ Erreur critique lors du démarrage:', error);
