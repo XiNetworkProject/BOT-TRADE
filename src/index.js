@@ -189,26 +189,51 @@ class ArbitrageBot {
             const wethPriceInUsdc = 4.47; // Prix actuel de WETH en USDC
             const polUsdcPriceInWeth = polUsdcPrice / wethPriceInUsdc;
 
-            logger.info('💰 Prix actuels:');
-            logger.info(`- POL/WETH: ${polWethPrice} WETH`);
-            logger.info(`- POL/USDC: ${polUsdcPrice} USDC (${polUsdcPriceInWeth} WETH)`);
+            // Récupération des soldes pour les alertes
+            const [polBalance, wethBalance, usdcBalance] = await Promise.all([
+                this.getTokenBalance(this.POL),
+                this.getTokenBalance(this.WETH),
+                this.getTokenBalance(this.USDC)
+            ]);
+
+            // Calcul des valeurs en USD pour le suivi
+            const totalValueUsd = (
+                parseFloat(polBalance) * (polUsdcPrice) +
+                parseFloat(wethBalance) * wethPriceInUsdc +
+                parseFloat(usdcBalance)
+            ).toFixed(2);
+
+            logger.info('💰 État du portefeuille:');
+            logger.info(`- POL: ${polBalance} (${(parseFloat(polBalance) * polUsdcPrice).toFixed(2)} USD)`);
+            logger.info(`- WETH: ${wethBalance} (${(parseFloat(wethBalance) * wethPriceInUsdc).toFixed(2)} USD)`);
+            logger.info(`- USDC: ${usdcBalance} USD`);
+            logger.info(`- Valeur totale: ${totalValueUsd} USD`);
+
+            // Seuils de profit dynamiques basés sur la valeur du portefeuille
+            const minProfitUsd = 0.05; // 5 cents minimum
+            const minProfitPercent = 0.1; // 0.1% minimum
 
             // Calcul de la différence de prix
             const priceDifference = Math.abs(polWethPrice - polUsdcPriceInWeth);
             const priceDifferencePercent = (priceDifference / Math.min(polWethPrice, polUsdcPriceInWeth)) * 100;
             
-            logger.info(`📊 Différence de prix: ${priceDifferencePercent.toFixed(2)}%`);
-
-            // Définition d'un seuil de profit minimum (0.5%)
-            const minProfitThreshold = 0.5;
+            // Calcul du profit potentiel en USD
+            const potentialProfitUsd = (priceDifference * parseFloat(wethBalance) * wethPriceInUsdc).toFixed(2);
+            
+            logger.info('📊 Analyse des prix:');
+            logger.info(`- POL/WETH: ${polWethPrice} WETH (${(polWethPrice * wethPriceInUsdc).toFixed(2)} USD)`);
+            logger.info(`- POL/USDC: ${polUsdcPrice} USDC`);
+            logger.info(`- Différence: ${priceDifferencePercent.toFixed(2)}%`);
+            logger.info(`- Profit potentiel: ${potentialProfitUsd} USD`);
 
             // Vérification des opportunités d'arbitrage
-            if (priceDifferencePercent >= minProfitThreshold) {
+            if (priceDifferencePercent >= minProfitPercent && parseFloat(potentialProfitUsd) >= minProfitUsd) {
                 const message = `🚨 Opportunité d'arbitrage détectée!\n` +
-                               `Différence de prix: ${priceDifferencePercent.toFixed(2)}%\n` +
-                               `Prix POL/WETH: ${polWethPrice} WETH\n` +
-                               `Prix POL/USDC: ${polUsdcPrice} USDC (${polUsdcPriceInWeth} WETH)\n` +
-                               `Seuil minimum: ${minProfitThreshold}%`;
+                               `Différence: ${priceDifferencePercent.toFixed(2)}%\n` +
+                               `Profit potentiel: ${potentialProfitUsd} USD\n` +
+                               `Direction: ${polWethPrice > polUsdcPriceInWeth ? 'USDC→WETH→POL' : 'POL→WETH→USDC'}\n` +
+                               `Prix POL/WETH: ${polWethPrice} (${(polWethPrice * wethPriceInUsdc).toFixed(2)} USD)\n` +
+                               `Prix POL/USDC: ${polUsdcPrice} USD`;
                 
                 logger.info(message);
                 await this.sendAlert(message);
@@ -218,19 +243,33 @@ class ArbitrageBot {
                     await this.executeArbitrage(polWethPool, polUsdcPool, polWethPrice, polUsdcPriceInWeth);
                 } catch (error) {
                     logger.error('❌ Erreur lors de l\'exécution de l\'arbitrage:', error);
-                    await this.sendAlert(`❌ Erreur lors de l\'exécution de l\'arbitrage: ${error.message}`);
+                    await this.sendAlert(`❌ Erreur lors de l\'arbitrage: ${error.message}`);
                 }
             } else {
-                logger.info(`⏳ Différence de prix (${priceDifferencePercent.toFixed(2)}%) inférieure au seuil minimum (${minProfitThreshold}%)`);
+                const reason = parseFloat(potentialProfitUsd) < minProfitUsd 
+                    ? `Profit insuffisant (${potentialProfitUsd} < ${minProfitUsd} USD)`
+                    : `Différence insuffisante (${priceDifferencePercent.toFixed(2)}% < ${minProfitPercent}%)`;
+                logger.info(`⏳ Pas d'opportunité: ${reason}`);
             }
 
-            // Vérification de la liquidité
-            const polWethLiquidity = await this.getPoolLiquidity(polWethPool);
-            const polUsdcLiquidity = await this.getPoolLiquidity(polUsdcPool);
-            
-            logger.info('💧 Liquidité des pools:');
-            logger.info(`- POL/WETH: ${polWethLiquidity} WETH`);
-            logger.info(`- POL/USDC: ${polUsdcLiquidity} USDC`);
+            // Alertes de variation de prix importante
+            const PRICE_ALERT_THRESHOLD = 5; // 5% de variation
+            if (priceDifferencePercent > PRICE_ALERT_THRESHOLD) {
+                const alertMessage = `⚠️ Variation importante des prix!\n` +
+                                   `Différence: ${priceDifferencePercent.toFixed(2)}%\n` +
+                                   `POL/WETH: ${polWethPrice} (${(polWethPrice * wethPriceInUsdc).toFixed(2)} USD)\n` +
+                                   `POL/USDC: ${polUsdcPrice} USD`;
+                await this.sendAlert(alertMessage);
+            }
+
+            // Alerte de solde faible
+            const MIN_BALANCE_USD = 1; // 1 USD minimum
+            if (parseFloat(totalValueUsd) < MIN_BALANCE_USD) {
+                const alertMessage = `⚠️ Solde faible!\n` +
+                                   `Valeur totale: ${totalValueUsd} USD\n` +
+                                   `Minimum recommandé: ${MIN_BALANCE_USD} USD`;
+                await this.sendAlert(alertMessage);
+            }
 
         } catch (error) {
             logger.error('❌ Erreur lors du monitoring des pools:', error);
@@ -238,16 +277,20 @@ class ArbitrageBot {
         }
     }
 
-    async getPoolLiquidity(pool) {
+    async getTokenBalance(token) {
         try {
-            const reserves = await pool.getReserves();
-            const token0 = await pool.token0();
-            const isWethToken0 = token0.toLowerCase() === this.WETH.address.toLowerCase();
-            
-            const wethReserve = isWethToken0 ? reserves[0] : reserves[1];
-            return ethers.utils.formatEther(wethReserve);
+            const contract = new ethers.Contract(
+                token.address,
+                ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)'],
+                this.wallet
+            );
+            const [balance, decimals] = await Promise.all([
+                contract.balanceOf(this.wallet.address),
+                contract.decimals()
+            ]);
+            return ethers.utils.formatUnits(balance, decimals);
         } catch (error) {
-            logger.error('Erreur lors de la récupération de la liquidité:', error);
+            logger.error(`Erreur lors de la récupération du solde de ${token.symbol}:`, error);
             return '0';
         }
     }
