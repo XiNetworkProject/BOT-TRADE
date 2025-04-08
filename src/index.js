@@ -403,6 +403,7 @@ class ArbitrageBot {
             
             if (parseFloat(balanceInEth) < 0.00001) {
                 console.warn('⚠️ Attention: Solde insuffisant pour effectuer des transactions');
+                this.sendAlert('⚠️ Attention: Solde insuffisant pour effectuer des transactions');
             }
             
             // Vérification des pools
