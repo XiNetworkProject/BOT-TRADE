@@ -422,15 +422,31 @@ class ArbitrageBot {
 
     async start() {
         try {
-            logger.info('Démarrage du bot d\'arbitrage...');
+            logger.info('🚀 Démarrage du bot d\'arbitrage...');
             
             // Vérification de la connexion au réseau
-            const network = await this.provider.getNetwork();
-            logger.info(`Connecté au réseau: ${network.name} (${network.chainId})`);
+            try {
+                const network = await this.provider.getNetwork();
+                logger.info(`🌐 Connecté au réseau: ${network.name} (${network.chainId})`);
+            } catch (error) {
+                logger.error('❌ Erreur de connexion au réseau:', error);
+                throw error;
+            }
 
             // Vérification du solde
-            const balance = await this.wallet.getBalance();
-            logger.info(`Solde du wallet: ${ethers.utils.formatEther(balance)} ETH`);
+            try {
+                const balance = await this.wallet.getBalance();
+                const balanceEth = ethers.utils.formatEther(balance);
+                logger.info(`💰 Solde du wallet: ${balanceEth} ETH`);
+                
+                if (parseFloat(balanceEth) < 0.00001) {
+                    logger.warn('⚠️ Solde insuffisant pour effectuer des trades');
+                    this.sendAlert('⚠️ Attention: Solde insuffisant pour effectuer des trades');
+                }
+            } catch (error) {
+                logger.error('❌ Erreur lors de la vérification du solde:', error);
+                throw error;
+            }
 
             // Initialisation du bot Telegram
             if (process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
@@ -441,18 +457,26 @@ class ArbitrageBot {
             this.initExpressServer();
 
             // Démarrage du monitoring
-            logger.info('Démarrage du monitoring des pools...');
+            logger.info('🔍 Démarrage du monitoring des pools...');
+            const frequency = parseInt(process.env.TRADE_FREQUENCY_MS);
+            logger.info(`⏱️ Fréquence de monitoring: ${frequency}ms`);
+            
+            // Premier monitoring immédiat
+            await this.monitorPools();
+            
+            // Puis monitoring périodique
             setInterval(() => {
                 this.monitorPools().catch(error => {
-                    logger.error('Erreur dans le monitoring des pools:', error);
+                    logger.error('❌ Erreur dans le monitoring des pools:', error);
                 });
-            }, parseInt(process.env.TRADE_FREQUENCY_MS));
+            }, frequency);
 
-            logger.info('Bot d\'arbitrage démarré avec succès');
+            logger.info('✅ Bot d\'arbitrage démarré avec succès');
             this.sendAlert('🤖 Bot d\'arbitrage démarré avec succès!');
         } catch (error) {
-            logger.error('Erreur lors du démarrage du bot:', error);
+            logger.error('❌ Erreur lors du démarrage du bot:', error);
             this.sendAlert(`❌ Erreur au démarrage: ${error.message}`);
+            process.exit(1); // Arrêt du processus en cas d'erreur critique
         }
     }
 }
