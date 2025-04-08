@@ -341,38 +341,6 @@ class ArbitrageBot {
                 this.telegramBot = null;
             }
 
-            this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
-
-            // Si SERVER_URL est défini, on utilise le mode webhook
-            if (process.env.SERVER_URL) {
-                logger.info('Tentative de configuration en mode webhook...');
-                const webhookUrl = `${process.env.SERVER_URL}/webhook`;
-                
-                this.telegramBot.setWebHook(webhookUrl)
-                    .then(() => {
-                        logger.info(`Webhook configuré avec succès: ${webhookUrl}`);
-                        return this.telegramBot.getMe();
-                    })
-                    .then((botInfo) => {
-                        logger.info(`Bot Telegram connecté: ${botInfo.username}`);
-                    })
-                    .catch((error) => {
-                        logger.error('Erreur lors de la configuration du webhook, passage en mode polling:', error);
-                        this.initializePolling();
-                    });
-            } else {
-                logger.info('SERVER_URL non défini, utilisation du mode polling');
-                this.initializePolling();
-            }
-
-        } catch (error) {
-            logger.error('Erreur lors de l\'initialisation du bot Telegram:', error);
-            this.telegramBot = null;
-        }
-    }
-
-    initializePolling() {
-        try {
             this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
                 polling: {
                     interval: 300,
@@ -398,7 +366,7 @@ class ArbitrageBot {
                     // Attente plus longue avant de réessayer
                     setTimeout(() => {
                         logger.info('Tentative de réinitialisation du bot Telegram...');
-                        this.initializePolling();
+                        this.initializeTelegramBot();
                     }, 15000); // 15 secondes
                 }
             });
@@ -415,7 +383,7 @@ class ArbitrageBot {
                     this.telegramBot = null;
                 });
         } catch (error) {
-            logger.error('Erreur lors de l\'initialisation du polling:', error);
+            logger.error('Erreur lors de l\'initialisation du bot Telegram:', error);
             this.telegramBot = null;
         }
     }
