@@ -400,7 +400,7 @@ class ArbitrageBot {
         logger.info(message);
     }
 
-    initializeTelegramBot() {
+    async initializeTelegramBot() {
         try {
             // Vérification du token
             if (!process.env.TELEGRAM_BOT_TOKEN) {
@@ -413,61 +413,72 @@ class ArbitrageBot {
             // Arrêt de toute instance existante
             if (this.telegramBot) {
                 logger.info('Arrêt de l\'instance existante du bot Telegram...');
-                this.telegramBot.stopPolling();
+                try {
+                    await this.telegramBot.stopPolling();
+                } catch (error) {
+                    logger.warn('Erreur lors de l\'arrêt du bot existant:', error);
+                }
                 this.telegramBot = null;
             }
 
             // Attente de 5 secondes pour s'assurer que l'ancienne instance est bien arrêtée
-            setTimeout(() => {
-                this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
-                    polling: {
-                        interval: 300,
-                        autoStart: false,
-                        params: {
-                            timeout: 10,
-                            allowed_updates: ['message', 'callback_query']
-                        }
-                    }
-                });
+            await new Promise(resolve => setTimeout(resolve, 5000));
 
-                // Gestion des erreurs de polling
-                this.telegramBot.on('polling_error', (error) => {
-                    logger.error('Erreur de polling Telegram:', error);
+            // Création d'une nouvelle instance avec des paramètres optimisés
+            this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+                polling: {
+                    interval: 300,
+                    autoStart: false,
+                    params: {
+                        timeout: 10,
+                        allowed_updates: ['message', 'callback_query']
+                    }
+                }
+            });
+
+            // Gestion des erreurs de polling
+            this.telegramBot.on('polling_error', async (error) => {
+                logger.error('Erreur de polling Telegram:', error);
+                
+                if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
+                    logger.warn('Conflit détecté avec une autre instance du bot Telegram');
                     
-                    if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
-                        logger.warn('Conflit détecté avec une autre instance du bot Telegram');
-                        
-                        // Arrêt complet du bot
-                        this.telegramBot.stopPolling();
-                        this.telegramBot = null;
-                        
-                        // Attente plus longue avant de réessayer
-                        setTimeout(() => {
-                            logger.info('Tentative de réinitialisation du bot Telegram...');
-                            this.initializeTelegramBot();
-                        }, 30000); // 30 secondes
+                    // Arrêt complet du bot
+                    try {
+                        await this.telegramBot.stopPolling();
+                    } catch (stopError) {
+                        logger.warn('Erreur lors de l\'arrêt du bot:', stopError);
                     }
-                });
+                    this.telegramBot = null;
+                    
+                    // Attente plus longue avant de réessayer
+                    setTimeout(() => {
+                        logger.info('Tentative de réinitialisation du bot Telegram...');
+                        this.initializeTelegramBot();
+                    }, 30000); // 30 secondes
+                }
+            });
 
-                // Vérification de la connexion
-                this.telegramBot.getMe()
-                    .then((botInfo) => {
-                        logger.info(`Bot Telegram connecté: ${botInfo.username}`);
-                        this.telegramBot.startPolling();
-                        logger.info('Polling démarré avec succès');
-                        
-                        // Envoi d'un message de test
-                        this.sendAlert('🤖 Bot d\'arbitrage connecté et prêt!');
-                    })
-                    .catch((error) => {
-                        logger.error('Erreur lors de la vérification du bot:', error);
-                        this.telegramBot = null;
-                    });
-            }, 5000);
+            // Vérification de la connexion
+            const botInfo = await this.telegramBot.getMe();
+            logger.info(`Bot Telegram connecté: ${botInfo.username}`);
+            
+            // Démarrage du polling
+            await this.telegramBot.startPolling();
+            logger.info('Polling démarré avec succès');
+            
+            // Envoi d'un message de test
+            await this.sendAlert('🤖 Bot d\'arbitrage connecté et prêt!');
 
         } catch (error) {
             logger.error('Erreur lors de l\'initialisation du bot Telegram:', error);
             this.telegramBot = null;
+            
+            // Tentative de réinitialisation après un délai
+            setTimeout(() => {
+                logger.info('Tentative de réinitialisation du bot Telegram après erreur...');
+                this.initializeTelegramBot();
+            }, 30000);
         }
     }
 
