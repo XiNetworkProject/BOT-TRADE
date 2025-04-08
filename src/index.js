@@ -45,6 +45,11 @@ class ArbitrageBot {
         this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
         
         // Vérification des adresses
+        console.log('Vérification des adresses...');
+        console.log('POL:', process.env.POL_TOKEN_ADDRESS);
+        console.log('WETH:', process.env.WETH_TOKEN_ADDRESS);
+        console.log('USDC:', process.env.USDC_TOKEN_ADDRESS);
+        
         if (!ethers.utils.isAddress(process.env.POL_TOKEN_ADDRESS)) {
             throw new Error(`Adresse POL invalide: ${process.env.POL_TOKEN_ADDRESS}`);
         }
@@ -163,10 +168,17 @@ class ArbitrageBot {
                 return;
             }
 
+            logger.info('Surveillance des pools POL/WETH et POL/USDC...');
+            
             const [polWethPool, polUsdcPool] = await Promise.all([
                 this.getPoolWithCache(this.POL, this.WETH),
                 this.getPoolWithCache(this.POL, this.USDC)
             ]);
+
+            logger.info('Pools récupérées:', {
+                polWethPool: polWethPool ? 'OK' : 'NON TROUVÉ',
+                polUsdcPool: polUsdcPool ? 'OK' : 'NON TROUVÉ'
+            });
 
             if (!await this.checkPoolLiquidity(polWethPool) || !await this.checkPoolLiquidity(polUsdcPool)) {
                 logger.info('Liquidité insuffisante dans les pools');
@@ -178,8 +190,11 @@ class ArbitrageBot {
                 this.getPriceWithCache(polUsdcPool)
             ]);
 
-            logger.info(`Prix POL/WETH: ${polWethPrice}`);
-            logger.info(`Prix POL/USDC: ${polUsdcPrice}`);
+            logger.info('Prix actuels:', {
+                polWethPrice: polWethPrice,
+                polUsdcPrice: polUsdcPrice,
+                difference: Math.abs(polWethPrice - polUsdcPrice)
+            });
 
             await this.checkArbitrageOpportunity(polWethPrice, polUsdcPrice);
         } catch (error) {
