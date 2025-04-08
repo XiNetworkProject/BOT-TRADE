@@ -170,30 +170,21 @@ class ArbitrageBot {
 
     async monitorPools() {
         try {
-            await rateLimiter.consume('monitor');
+            logger.info('Début du monitoring des pools...');
             
-            const currentGasPrice = await this.getCurrentGasPrice();
-            if (currentGasPrice > process.env.MAX_GAS_PRICE_GWEI) {
-                logger.info('Prix du gas trop élevé, attente...');
+            const polWethPool = await this.getPoolWithCache(this.POL, this.WETH);
+            const polUsdcPool = await this.getPoolWithCache(this.POL, this.USDC);
+
+            if (!polWethPool || !polUsdcPool) {
+                logger.error('Un ou plusieurs pools non trouvés');
+                this.sendAlert('❌ Erreur: Pool(s) non trouvé(s)');
                 return;
             }
 
-            logger.info('Surveillance des pools POL/WETH et POL/USDC...');
-            
-            const [polWethPool, polUsdcPool] = await Promise.all([
-                this.getPoolWithCache(this.POL, this.WETH),
-                this.getPoolWithCache(this.POL, this.USDC)
-            ]);
-
-            logger.info('Pools récupérées:', {
-                polWethPool: polWethPool ? 'OK' : 'NON TROUVÉ',
-                polUsdcPool: polUsdcPool ? 'OK' : 'NON TROUVÉ'
+            logger.info('Pools trouvés:', {
+                polWethPool: polWethPool ? 'OK' : 'Non trouvé',
+                polUsdcPool: polUsdcPool ? 'OK' : 'Non trouvé'
             });
-
-            if (!await this.checkPoolLiquidity(polWethPool) || !await this.checkPoolLiquidity(polUsdcPool)) {
-                logger.info('Liquidité insuffisante dans les pools');
-                return;
-            }
 
             const [polWethPrice, polUsdcPrice] = await Promise.all([
                 this.getPriceWithCache(polWethPool),
@@ -203,7 +194,8 @@ class ArbitrageBot {
             logger.info('Prix actuels:', {
                 polWethPrice: polWethPrice,
                 polUsdcPrice: polUsdcPrice,
-                difference: Math.abs(polWethPrice - polUsdcPrice)
+                difference: Math.abs(polWethPrice - polUsdcPrice),
+                minProfitThreshold: parseFloat(process.env.MIN_PROFIT_THRESHOLD)
             });
 
             await this.checkArbitrageOpportunity(polWethPrice, polUsdcPrice);
@@ -241,6 +233,12 @@ class ArbitrageBot {
         const priceDifference = Math.abs(price1 - price2);
         const minProfitThreshold = parseFloat(process.env.MIN_PROFIT_THRESHOLD);
 
+        logger.info('Vérification opportunité d\'arbitrage:', {
+            priceDifference,
+            minProfitThreshold,
+            dailyLoss: this.metrics.dailyLoss.get()
+        });
+
         if (priceDifference > minProfitThreshold) {
             logger.info(`Opportunité d'arbitrage détectée! Différence de prix: ${priceDifference}%`);
             
@@ -251,6 +249,8 @@ class ArbitrageBot {
             }
 
             await this.executeTrade(price1, price2);
+        } else {
+            logger.info('Pas d\'opportunité d\'arbitrage détectée');
         }
     }
 
@@ -417,6 +417,42 @@ class ArbitrageBot {
         } catch (error) {
             logger.error('Erreur lors de l\'initialisation du polling:', error);
             this.telegramBot = null;
+        }
+    }
+
+    async start() {
+        try {
+            logger.info('Démarrage du bot d\'arbitrage...');
+            
+            // Vérification de la connexion au réseau
+            const network = await this.provider.getNetwork();
+            logger.info(`Connecté au réseau: ${network.name} (${network.chainId})`);
+
+            // Vérification du solde
+            const balance = await this.wallet.getBalance();
+            logger.info(`Solde du wallet: ${ethers.utils.formatEther(balance)} ETH`);
+
+            // Initialisation du bot Telegram
+            if (process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
+                this.initializeTelegramBot();
+            }
+
+            // Initialisation du serveur Express
+            this.initExpressServer();
+
+            // Démarrage du monitoring
+            logger.info('Démarrage du monitoring des pools...');
+            setInterval(() => {
+                this.monitorPools().catch(error => {
+                    logger.error('Erreur dans le monitoring des pools:', error);
+                });
+            }, parseInt(process.env.TRADE_FREQUENCY_MS));
+
+            logger.info('Bot d\'arbitrage démarré avec succès');
+            this.sendAlert('🤖 Bot d\'arbitrage démarré avec succès!');
+        } catch (error) {
+            logger.error('Erreur lors du démarrage du bot:', error);
+            this.sendAlert(`❌ Erreur au démarrage: ${error.message}`);
         }
     }
 }
