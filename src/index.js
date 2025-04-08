@@ -415,14 +415,30 @@ class ArbitrageBot {
                 logger.info('Arrêt de l\'instance existante du bot Telegram...');
                 try {
                     await this.telegramBot.stopPolling();
+                    await this.telegramBot.close();
                 } catch (error) {
                     logger.warn('Erreur lors de l\'arrêt du bot existant:', error);
                 }
                 this.telegramBot = null;
             }
 
-            // Attente de 5 secondes pour s'assurer que l'ancienne instance est bien arrêtée
-            await new Promise(resolve => setTimeout(resolve, 5000));
+            // Attente de 10 secondes pour s'assurer que l'ancienne instance est bien arrêtée
+            logger.info('Attente de 10 secondes pour s\'assurer que l\'ancienne instance est bien arrêtée...');
+            await new Promise(resolve => setTimeout(resolve, 10000));
+
+            // Vérification de l'état du bot via l'API Telegram
+            try {
+                const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getMe`);
+                const data = await response.json();
+                if (!data.ok) {
+                    logger.error('Erreur lors de la vérification du bot:', data);
+                    throw new Error('Impossible de vérifier l\'état du bot');
+                }
+                logger.info('État du bot vérifié avec succès');
+            } catch (error) {
+                logger.error('Erreur lors de la vérification de l\'état du bot:', error);
+                throw error;
+            }
 
             // Création d'une nouvelle instance avec des paramètres optimisés
             this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
@@ -446,6 +462,7 @@ class ArbitrageBot {
                     // Arrêt complet du bot
                     try {
                         await this.telegramBot.stopPolling();
+                        await this.telegramBot.close();
                     } catch (stopError) {
                         logger.warn('Erreur lors de l\'arrêt du bot:', stopError);
                     }
@@ -455,7 +472,7 @@ class ArbitrageBot {
                     setTimeout(() => {
                         logger.info('Tentative de réinitialisation du bot Telegram...');
                         this.initializeTelegramBot();
-                    }, 30000); // 30 secondes
+                    }, 60000); // 60 secondes
                 }
             });
 
@@ -478,7 +495,7 @@ class ArbitrageBot {
             setTimeout(() => {
                 logger.info('Tentative de réinitialisation du bot Telegram après erreur...');
                 this.initializeTelegramBot();
-            }, 30000);
+            }, 60000);
         }
     }
 
