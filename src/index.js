@@ -661,109 +661,40 @@ class ArbitrageBot {
         ).div(100);
     }
 
-    sendAlert(message) {
-        if (this.telegramBot && process.env.ENABLE_TELEGRAM_ALERTS === 'true') {
-            this.telegramBot.sendMessage(process.env.TELEGRAM_CHAT_ID, message);
-        }
-        logger.info(message);
-    }
-
     async initializeTelegramBot() {
         try {
-            // Vérification du token
-            if (!process.env.TELEGRAM_BOT_TOKEN) {
-                logger.error('Token Telegram non configuré');
-                return;
-            }
-
             logger.info('Initialisation du bot Telegram...');
             
-            // Arrêt de toute instance existante
-            if (this.telegramBot) {
-                logger.info('Arrêt de l\'instance existante du bot Telegram...');
-                try {
-                    await this.telegramBot.stopPolling();
-                    await this.telegramBot.close();
-                } catch (error) {
-                    logger.warn('Erreur lors de l\'arrêt du bot existant:', error);
-                }
-                this.telegramBot = null;
-            }
-
-            // Attente de 10 secondes pour s'assurer que l'ancienne instance est bien arrêtée
-            logger.info('Attente de 10 secondes pour s\'assurer que l\'ancienne instance est bien arrêtée...');
-            await new Promise(resolve => setTimeout(resolve, 10000));
-
-            // Vérification de l'état du bot via l'API Telegram
-            try {
-                const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getMe`);
-                const data = await response.json();
-                if (!data.ok) {
-                    logger.error('Erreur lors de la vérification du bot:', data);
-                    throw new Error('Impossible de vérifier l\'état du bot');
-                }
-                logger.info('État du bot vérifié avec succès');
-            } catch (error) {
-                logger.error('Erreur lors de la vérification de l\'état du bot:', error);
-                throw error;
-            }
-
-            // Création d'une nouvelle instance avec des paramètres optimisés
+            // Création du bot sans polling
             this.telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
-                polling: {
-                    interval: 300,
-                    autoStart: false,
-                    params: {
-                        timeout: 10,
-                        allowed_updates: ['message', 'callback_query']
-                    }
-                }
+                polling: false // Désactivation du polling
             });
 
-            // Gestion des erreurs de polling
-            this.telegramBot.on('polling_error', async (error) => {
-                logger.error('Erreur de polling Telegram:', error);
-                
-                if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
-                    logger.warn('Conflit détecté avec une autre instance du bot Telegram');
-                    
-                    // Arrêt complet du bot
-                    try {
-                        await this.telegramBot.stopPolling();
-                        await this.telegramBot.close();
-                    } catch (stopError) {
-                        logger.warn('Erreur lors de l\'arrêt du bot:', stopError);
-                    }
-                    this.telegramBot = null;
-                    
-                    // Attente plus longue avant de réessayer
-                    setTimeout(() => {
-                        logger.info('Tentative de réinitialisation du bot Telegram...');
-                        this.initializeTelegramBot();
-                    }, 60000); // 60 secondes
-                }
-            });
-
-            // Vérification de la connexion
+            // Test de la connexion
             const botInfo = await this.telegramBot.getMe();
             logger.info(`Bot Telegram connecté: ${botInfo.username}`);
             
-            // Démarrage du polling
-            await this.telegramBot.startPolling();
-            logger.info('Polling démarré avec succès');
-            
             // Envoi d'un message de test
             await this.sendAlert('🤖 Bot d\'arbitrage connecté et prêt!');
-
+            
+            return true;
         } catch (error) {
             logger.error('Erreur lors de l\'initialisation du bot Telegram:', error);
-            this.telegramBot = null;
+            return false;
+        }
+    }
+
+    async sendAlert(message) {
+        try {
+            if (!this.telegramBot) {
+                logger.warn('Bot Telegram non initialisé, impossible d\'envoyer l\'alerte');
+                return;
+            }
             
-            // Tentative de réinitialisation après un délai
-            setTimeout(() => {
-                logger.info('Tentative de réinitialisation du bot Telegram après erreur...');
-                this.initializeTelegramBot();
-            }, 60000);
+            await this.telegramBot.sendMessage(process.env.TELEGRAM_CHAT_ID, message);
+            logger.info('Notification Telegram envoyée');
+        } catch (error) {
+            logger.error('Erreur lors de l\'envoi de la notification Telegram:', error);
         }
     }
 
