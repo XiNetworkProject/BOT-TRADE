@@ -170,82 +170,179 @@ class ArbitrageBot {
 
     async monitorPools() {
         try {
-            logger.info('Début du monitoring des pools...');
+            logger.info('🔍 Début du monitoring des pools...');
             
-            const polWethPool = await this.getPoolWithCache(this.POL, this.WETH);
-            const polUsdcPool = await this.getPoolWithCache(this.POL, this.USDC);
-
+            // Récupération des pools
+            const polWethPool = await this.getPool(this.POL, this.WETH);
+            const polUsdcPool = await this.getPool(this.POL, this.USDC);
+            
             if (!polWethPool || !polUsdcPool) {
-                logger.error('Un ou plusieurs pools non trouvés');
-                this.sendAlert('❌ Erreur: Pool(s) non trouvé(s)');
+                logger.error('❌ Pools non trouvés');
+                return;
+            }
+
+            logger.info('✅ Pools trouvés:');
+            logger.info(`- POL/WETH: ${polWethPool.address}`);
+            logger.info(`- POL/USDC: ${polUsdcPool.address}`);
+
+            // Récupération des prix
+            const polWethPrice = await this.getPrice(polWethPool);
+            const polUsdcPrice = await this.getPrice(polUsdcPool);
+            
+            logger.info('💰 Prix actuels:');
+            logger.info(`- POL/WETH: ${polWethPrice} WETH`);
+            logger.info(`- POL/USDC: ${polUsdcPrice} USDC`);
+
+            // Calcul de la différence de prix
+            const priceDifference = Math.abs(polWethPrice - polUsdcPrice);
+            const priceDifferencePercent = (priceDifference / Math.min(polWethPrice, polUsdcPrice)) * 100;
+            
+            logger.info(`📊 Différence de prix: ${priceDifferencePercent.toFixed(2)}%`);
+
+            // Vérification des opportunités d'arbitrage
+            if (priceDifferencePercent >= this.minProfitThreshold) {
+                const message = `🚨 Opportunité d'arbitrage détectée!\n` +
+                               `Différence de prix: ${priceDifferencePercent.toFixed(2)}%\n` +
+                               `Prix POL/WETH: ${polWethPrice} WETH\n` +
+                               `Prix POL/USDC: ${polUsdcPrice} USDC\n` +
+                               `Seuil minimum: ${this.minProfitThreshold}%`;
+                
+                logger.info(message);
+                await this.sendAlert(message);
+                
+                // Tentative d'exécution de l'arbitrage
+                try {
+                    await this.executeArbitrage(polWethPool, polUsdcPool);
+                } catch (error) {
+                    logger.error('❌ Erreur lors de l\'exécution de l\'arbitrage:', error);
+                    await this.sendAlert(`❌ Erreur lors de l\'exécution de l\'arbitrage: ${error.message}`);
+                }
+            } else {
+                logger.info('⏳ Aucune opportunité d\'arbitrage détectée pour le moment');
+            }
+
+            // Vérification de la liquidité
+            const polWethLiquidity = await this.getPoolLiquidity(polWethPool);
+            const polUsdcLiquidity = await this.getPoolLiquidity(polUsdcPool);
+            
+            logger.info('💧 Liquidité des pools:');
+            logger.info(`- POL/WETH: ${polWethLiquidity} WETH`);
+            logger.info(`- POL/USDC: ${polUsdcLiquidity} USDC`);
+
+            // Alertes de liquidité faible
+            if (polWethLiquidity < this.minPoolLiquidity) {
+                const message = `⚠️ Attention: Liquidité faible sur POL/WETH\n` +
+                               `Liquidité actuelle: ${polWethLiquidity} WETH\n` +
+                               `Seuil minimum: ${this.minPoolLiquidity} WETH`;
+                logger.warn(message);
+                await this.sendAlert(message);
+            }
+
+            if (polUsdcLiquidity < this.minPoolLiquidity) {
+                const message = `⚠️ Attention: Liquidité faible sur POL/USDC\n` +
+                               `Liquidité actuelle: ${polUsdcLiquidity} USDC\n` +
+                               `Seuil minimum: ${this.minPoolLiquidity} USDC`;
+                logger.warn(message);
+                await this.sendAlert(message);
+            }
+
+        } catch (error) {
+            logger.error('❌ Erreur lors du monitoring des pools:', error);
+            await this.sendAlert(`❌ Erreur lors du monitoring des pools: ${error.message}`);
+        }
+    }
+
+    async getPoolLiquidity(pool) {
+        try {
+            const reserves = await pool.getReserves();
+            const token0 = await pool.token0();
+            const isWethToken0 = token0.toLowerCase() === this.WETH.address.toLowerCase();
+            
+            const wethReserve = isWethToken0 ? reserves[0] : reserves[1];
+            return ethers.utils.formatEther(wethReserve);
+        } catch (error) {
+            logger.error('Erreur lors de la récupération de la liquidité:', error);
+            return '0';
+        }
+    }
+
+    async executeArbitrage(polWethPool, polUsdcPool) {
+        try {
+            logger.info('🔄 Début de l\'exécution de l\'arbitrage...');
+            
+            // Vérification du solde
+            const balance = await this.wallet.getBalance();
+            const balanceInEth = ethers.utils.formatEther(balance);
+            logger.info(`💰 Solde actuel: ${balanceInEth} ETH`);
+
+            if (parseFloat(balanceInEth) < 0.00001) {
+                const message = '❌ Solde insuffisant pour effectuer des swaps';
+                logger.warn(message);
+                await this.sendAlert(message);
                 return;
             }
 
             // Récupération des prix
-            const [polWethPrice, polUsdcPrice] = await Promise.all([
-                this.getPriceWithCache(polWethPool),
-                this.getPriceWithCache(polUsdcPool)
-            ]);
-
-            // Conversion de 5 centimes d'euro en WETH
-            // 1 EUR = 1.08 USD (taux approximatif)
-            // 5 centimes = 0.05 EUR = 0.054 USD
-            const minProfitInUsd = 0.054; // 5 centimes d'euro en USD
-            const minProfitInWeth = minProfitInUsd / polWethPrice; // Conversion en WETH
-
-            logger.info('Prix actuels:', {
-                polWethPrice: polWethPrice,
-                polUsdcPrice: polUsdcPrice,
-                minProfitInWeth: minProfitInWeth,
-                minProfitInUsd: minProfitInUsd
-            });
-
-            // Vérification du solde
-            const balance = await this.wallet.getBalance();
-            const balanceInEth = ethers.utils.formatEther(balance);
+            const polWethPrice = await this.getPrice(polWethPool);
+            const polUsdcPrice = await this.getPrice(polUsdcPool);
             
-            if (parseFloat(balanceInEth) < 0.01) {
-                logger.warn('Solde insuffisant pour effectuer des swaps');
-                this.sendAlert('⚠️ Attention: Solde insuffisant pour effectuer des swaps');
+            logger.info('📊 Prix actuels:');
+            logger.info(`- POL/WETH: ${polWethPrice} WETH`);
+            logger.info(`- POL/USDC: ${polUsdcPrice} USDC`);
+
+            // Calcul de la différence de prix
+            const priceDifference = Math.abs(polWethPrice - polUsdcPrice);
+            const priceDifferencePercent = (priceDifference / Math.min(polWethPrice, polUsdcPrice)) * 100;
+            
+            logger.info(`📈 Différence de prix: ${priceDifferencePercent.toFixed(2)}%`);
+            logger.info(`🎯 Seuil minimum: ${this.minProfitThreshold}%`);
+
+            // Vérification du seuil de profit
+            if (priceDifferencePercent < this.minProfitThreshold) {
+                logger.info('⏳ Différence de prix insuffisante pour l\'arbitrage');
                 return;
             }
 
-            // Si la différence de prix est suffisante pour un profit
-            if (Math.abs(polWethPrice - polUsdcPrice) >= minProfitInWeth) {
-                // Calcul de la taille du swap (5% du solde disponible)
-                const swapAmount = ethers.utils.parseEther(
-                    (parseFloat(balanceInEth) * 0.05).toString()
-                );
+            // Calcul de la taille du swap (1% du solde)
+            const swapAmount = ethers.utils.parseEther(
+                (parseFloat(balanceInEth) * 0.01).toString()
+            );
+            
+            logger.info(`💱 Taille du swap: ${ethers.utils.formatEther(swapAmount)} ETH`);
 
-                // Exécution du swap
-                if (polWethPrice > polUsdcPrice) {
-                    // Swap POL -> WETH -> USDC
-                    await this.executeSwap(this.POL, this.WETH, swapAmount);
-                    await this.executeSwap(this.WETH, this.USDC, swapAmount);
-                } else {
-                    // Swap USDC -> WETH -> POL
-                    await this.executeSwap(this.USDC, this.WETH, swapAmount);
-                    await this.executeSwap(this.WETH, this.POL, swapAmount);
-                }
-
-                // Mise à jour des métriques
-                this.metrics.totalTrades.inc();
-                this.metrics.successfulTrades.inc();
-                
-                // Envoi d'une notification
-                this.sendAlert(`✅ Swap effectué avec succès! Profit estimé: ${minProfitInUsd} USD (${minProfitInWeth} WETH)`);
+            // Exécution du swap dans la direction la plus profitable
+            if (polWethPrice > polUsdcPrice) {
+                logger.info('🔄 Exécution du swap POL -> WETH -> USDC');
+                await this.executeSwap(this.POL, this.WETH, swapAmount);
+                await this.executeSwap(this.WETH, this.USDC, swapAmount);
             } else {
-                logger.info('Pas d\'opportunité de profit suffisante');
+                logger.info('🔄 Exécution du swap USDC -> WETH -> POL');
+                await this.executeSwap(this.USDC, this.WETH, swapAmount);
+                await this.executeSwap(this.WETH, this.POL, swapAmount);
             }
 
+            // Mise à jour des métriques
+            this.metrics.totalTrades.inc();
+            this.metrics.successfulTrades.inc();
+            
+            const profitMessage = `✅ Arbitrage réussi!\n` +
+                                `Différence de prix: ${priceDifferencePercent.toFixed(2)}%\n` +
+                                `Montant échangé: ${ethers.utils.formatEther(swapAmount)} ETH`;
+            
+            logger.info(profitMessage);
+            await this.sendAlert(profitMessage);
+
         } catch (error) {
-            logger.error('Erreur lors du monitoring des pools:', error);
-            this.sendAlert(`❌ Erreur: ${error.message}`);
+            logger.error('❌ Erreur lors de l\'exécution de l\'arbitrage:', error);
+            this.metrics.failedTrades.inc();
+            await this.sendAlert(`❌ Erreur lors de l\'arbitrage: ${error.message}`);
         }
     }
 
     async executeSwap(tokenIn, tokenOut, amount) {
         try {
+            logger.info(`🔄 Début du swap ${tokenIn.symbol} -> ${tokenOut.symbol}`);
+            
             // Préparation de la transaction
             const router = new ethers.Contract(
                 process.env.QUICKSWAP_ROUTER_ADDRESS,
@@ -255,12 +352,14 @@ class ArbitrageBot {
 
             // Calcul du montant minimum de sortie avec slippage
             const amountOutMin = amount.mul(95).div(100); // 5% de slippage
+            logger.info(`📊 Montant minimum attendu: ${ethers.utils.formatEther(amountOutMin)} ${tokenOut.symbol}`);
 
             // Préparation du chemin de swap
             const path = [tokenIn.address, tokenOut.address];
             const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes
 
             // Exécution du swap
+            logger.info('⏳ Envoi de la transaction...');
             const tx = await router.swapExactTokensForTokens(
                 amount,
                 amountOutMin,
@@ -270,13 +369,16 @@ class ArbitrageBot {
             );
 
             // Attente de la confirmation
-            await tx.wait();
+            logger.info('⏳ Attente de la confirmation...');
+            const receipt = await tx.wait();
             
-            logger.info(`Swap ${tokenIn.symbol} -> ${tokenOut.symbol} effectué avec succès`);
-            return tx;
+            logger.info(`✅ Swap ${tokenIn.symbol} -> ${tokenOut.symbol} confirmé!`);
+            logger.info(`📝 Hash de la transaction: ${receipt.transactionHash}`);
+            
+            return receipt;
 
         } catch (error) {
-            logger.error(`Erreur lors du swap ${tokenIn.symbol} -> ${tokenOut.symbol}:`, error);
+            logger.error(`❌ Erreur lors du swap ${tokenIn.symbol} -> ${tokenOut.symbol}:`, error);
             throw error;
         }
     }
